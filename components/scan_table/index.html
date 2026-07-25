@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<style>
+  @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+  html, body { margin:0; padding:0; background:transparent;
+    font-family:'Pretendard',-apple-system,BlinkMacSystemFont,sans-serif; color:#17301F; }
+  .table-wrap { border:1px solid #d8e8d1; border-radius:16px; overflow:auto; background:#fff;
+    max-height:460px; box-shadow:0 12px 30px -22px rgba(40,120,60,.5); }
+  table.golf-table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  .golf-table thead th { position:sticky; top:0; background:#eef7e9; color:#3c6b47; font-weight:800;
+    text-align:center; padding:13px 11px; border-bottom:1px solid #d8e8d1; white-space:nowrap; z-index:2; }
+  .golf-table tbody td { padding:12px 11px; border-bottom:1px solid #eef3ea; text-align:center;
+    color:#26382b; white-space:nowrap; }
+  .golf-table th:first-child, .golf-table td:first-child { padding-left:16px; }
+  .golf-table th:last-child, .golf-table td:last-child { padding-right:16px; }
+  .golf-table tbody tr { cursor:pointer; transition:background .12s; }
+  .golf-table tbody tr:hover td { background:#f3fbef; }
+  .golf-table tbody tr.sel td { background:linear-gradient(90deg, rgba(22,163,74,.16), rgba(22,163,74,.03) 70%); }
+  .golf-table tbody tr.best td:first-child { box-shadow: inset 3px 0 0 #16A34A; }
+  .golf-table .course { text-align:left; font-weight:800; color:#123021; }
+  .golf-table .rank { color:#9bb0a0; font-weight:800; width:34px; }
+  .golf-table .money { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .golf-table .price { text-align:center; white-space:nowrap; font-variant-numeric:tabular-nums; font-weight:700; }
+  .deal-price { color:#e0352b; font-weight:800; }
+  .best-badge { background:#F5A524; color:#3a2600; padding:2px 8px; border-radius:6px; font-size:11px;
+    font-weight:800; margin-left:8px; display:inline-block; }
+  .badge { padding:3px 11px; border-radius:999px; font-size:12px; font-weight:700; color:#fff; }
+  .book { background:#16A34A; color:#fff !important; padding:6px 14px; border-radius:9px; font-weight:800;
+    text-decoration:none; font-size:13px; display:inline-block;
+    box-shadow:0 4px 12px -4px rgba(22,163,74,.6); }
+  .book:hover { background:#12b552; }
+  .empty { padding:26px; text-align:center; color:#7a8f80; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  const R = document.getElementById('root');
+
+  function post(msg){ window.parent.postMessage(Object.assign({isStreamlitMessage:true}, msg), "*"); }
+  function ready(){ post({type:"streamlit:componentReady", apiVersion:1}); }
+  function setH(h){ post({type:"streamlit:setFrameHeight", height:h}); }
+  function setVal(v){ post({type:"streamlit:setComponentValue", value:v, dataType:"json"}); }
+
+  function esc(s){
+    return (s==null?"":String(s)).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+  function caddieColor(c){
+    c = c||"";
+    if(c.indexOf("노")>=0) return "#16A34A";
+    if(c.indexOf("선택")>=0) return "#D97706";
+    return "#DC2626";
+  }
+
+  function render(rows, selected){
+    if(!rows || !rows.length){ R.innerHTML = "<div class='empty'>표시할 골프장이 없어요.</div>"; setH(90); return; }
+    let h = "<div class='table-wrap'><table class='golf-table'><thead><tr>"
+      + "<th>번호</th><th>골프장</th><th>지역</th><th>최저 그린피</th><th>코스</th><th>캐디</th><th>평점</th><th>예약</th>"
+      + "</tr></thead><tbody>";
+    rows.forEach((r,i)=>{
+      const isSel = (String(r.course)===String(selected));
+      const cls = isSel ? " class='sel'" : (r.is_best ? " class='best'" : "");
+      const price = Number(r.min_cost).toLocaleString()+"원";
+      const priceHtml = r.is_deal ? "<span class='deal-price'>"+price+"</span>" : price;
+      const bestTag = r.is_best ? "<span class='best-badge'>최저가</span>" : "";
+      const cad = "<span class='badge' style='background:"+caddieColor(r.caddie)+"'>"+esc(r.caddie)+"</span>";
+      const score = (r.score!==null && r.score!==undefined) ? "⭐"+r.score : "-";
+      h += "<tr"+cls+" data-course='"+encodeURIComponent(r.course)+"'>"
+        + "<td class='rank'>"+(i+1)+"</td>"
+        + "<td class='course'>"+esc(r.course)+bestTag+"</td>"
+        + "<td>"+esc(r.area)+"</td>"
+        + "<td class='price'>"+priceHtml+"</td>"
+        + "<td>"+esc(r.course_name)+"</td>"
+        + "<td>"+cad+"</td><td>"+score+"</td>"
+        + "<td><a class='book' href='https://www.teescanner.com' target='_blank' rel='noopener' onclick='event.stopPropagation()'>예약</a></td>"
+        + "</tr>";
+    });
+    h += "</tbody></table></div>";
+    R.innerHTML = h;
+    R.querySelectorAll("tbody tr").forEach(tr=>{
+      tr.addEventListener("click", ()=>{
+        const c = decodeURIComponent(tr.getAttribute("data-course"));
+        setVal(c);
+        try { window.parent.document.getElementById('tt-detail')
+                .scrollIntoView({behavior:'smooth', block:'start'}); } catch(e){}
+      });
+    });
+    setH(490);
+  }
+
+  window.addEventListener("message", (e)=>{
+    if(e.data && e.data.type==="streamlit:render"){
+      const a = e.data.args || {};
+      render(a.rows || [], a.selected);
+    }
+  });
+  ready();
+</script>
+</body>
+</html>

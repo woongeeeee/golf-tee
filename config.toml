@@ -1,0 +1,13 @@
+[theme]
+base = "light"
+primaryColor = "#16A34A"
+backgroundColor = "#EEF6EA"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#12261A"
+font = "sans serif"
+
+[server]
+runOnSave = true
+# 외부 링크(터널) 공유 시 접속이 막히지 않도록
+enableCORS = false
+enableXsrfProtection = false

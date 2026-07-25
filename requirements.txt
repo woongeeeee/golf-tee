@@ -1,0 +1,7 @@
+# 전국 골프장 티타임 통합검색 - 필요 패키지
+streamlit>=1.36
+pandas>=2.0
+requests>=2.31
+folium>=0.16              # 지도(OpenStreetMap)
+streamlit-folium>=0.20    # Streamlit에서 folium 지도 렌더링
+streamlit-keyup>=0.3      # 실시간(타이핑 즉시) 검색 입력

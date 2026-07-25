@@ -1,0 +1,1173 @@
+"""
+app.py  —  전국 골프장 티타임 통합검색 (티스캐너 스타일)
+실행:  streamlit run app.py
+"""
+
+import calendar
+import datetime as dt
+import html as _html
+from pathlib import Path
+from urllib.parse import quote
+
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
+import folium
+from streamlit_folium import st_folium
+from st_keyup import st_keyup
+
+import data as D
+from data import add_total_cost
+import weather as wx
+import teescanner as ts
+import catalog as CAT
+import scan as SCAN
+
+st.set_page_config(page_title="웅SCANNER · 전국 골프장 티타임",
+                   page_icon="⛳", layout="wide", initial_sidebar_state="auto")
+
+TODAY = dt.date.today()
+MONTH_RANGE_LABEL = f"{TODAY.month}~{TODAY.month % 12 + 1}월"  # 당월~다음월 (월 바뀌면 자동 변경)
+DEAL_LIMIT_PRICE = 70000  # 특가 기준 그린피(원)
+MAX_DATES = 45            # 성능 보호: 한 번에 생성/표시할 최대 날짜 수
+
+# 클릭 가능한 스타일 표(커스텀 컴포넌트) — 행 클릭 시 새로고침 없이 선택값을 반환
+_scan_table = components.declare_component(
+    "scan_table", path=str(Path(__file__).parent / "components" / "scan_table"))
+
+
+def _secret(k: str):
+    """secrets.toml 이 없어도 안전하게 읽기(없으면 None)."""
+    try:
+        return st.secrets[k]
+    except Exception:
+        return None
+
+
+# 클라우드 배포용: secrets에 토큰이 있으면 모두가 그걸로 실데이터를 사용(친구들은 입력 불필요)
+_sx, _sr = _secret("TEESCANNER_X_TOKEN"), _secret("TEESCANNER_X_REFRESH_TOKEN")
+if _sx and _sr:
+    ts.set_tokens(str(_sx), str(_sr))
+
+def naver_directions(course: str) -> str:
+    """골프장 이름으로 네이버 지도(실제 위치)를 열어 길찾기하는 링크."""
+    return f"https://map.naver.com/p/search/{quote(course)}"
+
+
+def folium_map(mapdf: pd.DataFrame) -> folium.Map:
+    """OpenStreetMap(무료·키 불필요) + 골프장 마커 지도. 마커 클릭 시 길찾기 버튼."""
+    center = [float(mapdf["lat"].mean()), float(mapdf["lon"].mean())]
+    m = folium.Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
+    for _, r in mapdf.iterrows():
+        loc = r["city"] if "city" in r and pd.notna(r["city"]) else r.get("region", "")
+        popup_html = (
+            f"<div style='font-family:sans-serif;text-align:center;min-width:150px'>"
+            f"<div style='font-weight:800;font-size:14px;margin-bottom:2px'>{r['course']}</div>"
+            f"<div style='color:#5c7565;font-size:12px'>{loc} · {r['holes']}홀 · {r['gubun']}</div>"
+            f"<a href='{naver_directions(str(r['course']))}' target='_blank' "
+            f"style='display:inline-block;margin-top:8px;background:#16A34A;color:#fff;"
+            f"padding:6px 14px;border-radius:8px;font-weight:800;text-decoration:none;font-size:13px'>"
+            f"🧭 네이버 길찾기</a></div>"
+        )
+        folium.CircleMarker(
+            location=[float(r["lat"]), float(r["lon"])],
+            radius=6, weight=1, color="#991B1B",
+            fill=True, fill_color="#EF4444", fill_opacity=0.9,
+            tooltip=f"{r['course']}",
+            popup=folium.Popup(popup_html, max_width=240),
+        ).add_to(m)
+    return m
+
+# ============================ 디자인(CSS) — 밝은 잔디 테마 ============================
+CSS = """
+<style>
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Gowun+Dodum&family=Bungee&family=Black+Han+Sans&display=swap');
+
+html, body, [class*="css"], .stApp, button, input, select, textarea {
+    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    color: #17301F;
+}
+.stApp {
+    background:
+      repeating-linear-gradient(122deg, rgba(45,150,60,.045) 0 44px, rgba(90,190,105,.085) 44px 88px),
+      radial-gradient(1000px 520px at 92% -12%, rgba(150,230,160,.35), transparent 60%),
+      linear-gradient(180deg, #eff8ea 0%, #e3f1dc 100%) fixed;
+}
+.block-container { padding-top: 1.3rem; padding-bottom: 3rem; max-width: 1460px; }
+#MainMenu, footer { visibility: hidden; height:0; }
+/* 헤더는 투명하게만(숨기면 사이드바 다시 열기 버튼까지 사라짐) */
+header[data-testid="stHeader"] { background: transparent; }
+/* 오른쪽 위 Deploy 버튼/툴바 숨김 (스트림릿 기본 요소) */
+[data-testid="stToolbar"], [data-testid="stAppDeployButton"], .stDeployButton { display: none !important; }
+/* 데스크톱(넓은 화면)에서만 사이드바 고정 + 접기 버튼 숨김.
+   모바일(좁은 화면)에서는 스트림릿 기본 동작(햄버거로 접었다 폈다)이 살아나게 둠 */
+@media (min-width: 900px) {
+    section[data-testid="stSidebar"] {
+        transform: none !important;
+        visibility: visible !important;
+        margin-left: 0 !important;
+        left: 0 !important;
+        width: 300px !important;
+        min-width: 300px !important;
+    }
+    section[data-testid="stSidebar"] > div { width: 300px !important; }
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] { display: none !important; }
+}
+
+/* ---------- 히어로 (햇살 잔디 페어웨이) ---------- */
+.hero {
+    position:relative; overflow:hidden; border-radius:26px; padding:34px 46px; margin-bottom:26px;
+    background:
+      radial-gradient(520px 260px at 88% -30%, rgba(255,255,255,.55), transparent 60%),
+      linear-gradient(118deg, #167c3c 0%, #27a851 42%, #7fd24a 100%);
+    box-shadow: 0 26px 55px -26px rgba(39,168,81,.65), inset 0 1px 0 rgba(255,255,255,.35);
+}
+.hero:before {  /* 잔디 깎은 줄무늬(모잉 스트라이프) */
+    content:""; position:absolute; inset:0; opacity:.5;
+    background: repeating-linear-gradient(100deg, rgba(255,255,255,.10) 0 34px, rgba(0,0,0,.05) 34px 68px);
+    mask: linear-gradient(180deg, transparent 30%, #000 100%);
+}
+.hero .flag { position:absolute; right:46px; top:50%; transform:translateY(-50%); font-size:150px;
+    filter: drop-shadow(0 16px 28px rgba(0,0,0,.32)); }
+.hero-kick { position:relative; display:inline-block; color:#eafff0; font-weight:800; font-size:13px;
+    letter-spacing:.4px; background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.4);
+    padding:5px 13px; border-radius:999px; margin-bottom:13px; }
+.hero h1 { position:relative; color:#fff; font-size:48px; font-weight:800; margin:0; line-height:1.04;
+    letter-spacing:-1.5px; text-shadow:0 3px 16px rgba(0,60,20,.35); }
+.hero p  { position:relative; font-family:'Gowun Dodum','Pretendard',sans-serif !important;
+    color:#f0fff3; font-size:16.5px; margin:14px 0 0; }
+.hero .chip {
+    position:relative; display:inline-flex; align-items:center; gap:8px; margin-top:20px;
+    background: rgba(255,255,255,.22); color:#fff; padding:9px 18px; border-radius:999px;
+    font-size:14px; font-weight:700; border:1px solid rgba(255,255,255,.4); backdrop-filter: blur(4px);
+}
+
+/* ---------- KPI 카드 ---------- */
+.kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin:2px 0 24px; }
+.kpi-card {
+    background:#fff; border:1px solid #dcebd5; border-radius:18px; padding:20px 22px;
+    box-shadow: 0 10px 24px -18px rgba(40,120,60,.4);
+    transition:transform .16s ease, box-shadow .16s ease;
+}
+.kpi-card:hover { transform:translateY(-4px); box-shadow:0 18px 34px -18px rgba(22,163,74,.5); }
+.kpi-card .ico { width:40px; height:40px; border-radius:12px; display:flex; align-items:center;
+    justify-content:center; font-size:20px; background:#e9f8ee; margin-bottom:12px; }
+.kpi-card .label { color:#5c7565; font-size:13px; font-weight:600; }
+.kpi-card .value { font-family:'Montserrat','Pretendard',sans-serif !important;
+    color:#12321f; font-size:29px; font-weight:800; margin-top:5px; }
+.kpi-card.hl { background:linear-gradient(180deg,#eafaef,#ffffff); border-color:#8fe0a6; }
+.kpi-card.hl .value { color:#12a350; }
+
+/* ---------- 탭 ---------- */
+.stTabs [data-baseweb="tab-list"] { gap:8px; border-bottom:1px solid #cfe3c7; }
+.stTabs [data-baseweb="tab"] { background:transparent; border-radius:10px 10px 0 0; padding:9px 18px;
+    font-weight:700; color:#5c7565; }
+.stTabs [aria-selected="true"] { background:#ffffff; color:#12a350; box-shadow:0 -2px 0 #16A34A inset; }
+
+/* ---------- 티타임 테이블 ---------- */
+.table-wrap { border:1px solid #d8e8d1; border-radius:16px; overflow-x:auto; background:#fff;
+    box-shadow:0 12px 30px -22px rgba(40,120,60,.5); }
+.golf-table { width:100%; min-width:900px; border-collapse:collapse; font-size:13.5px; table-layout:auto; }
+.golf-table thead th { background:#eef7e9; color:#3c6b47; font-weight:800; text-align:center;
+    padding:13px 11px; border-bottom:1px solid #d8e8d1; white-space:nowrap; }
+.golf-table tbody td { padding:12px 11px; border-bottom:1px solid #eef3ea; text-align:center;
+    color:#26382b; white-space:nowrap; }
+.golf-table th:first-child, .golf-table td:first-child { padding-left:16px; }
+.golf-table th:last-child, .golf-table td:last-child { padding-right:16px; }
+.golf-table tbody tr:last-child td { border-bottom:none; }
+.golf-table tbody tr:hover td { background:#f3fbef; }
+.golf-table tbody tr.best td { background:linear-gradient(90deg, rgba(22,163,74,.10), transparent 70%); }
+.golf-table tbody tr.best td:first-child { box-shadow: inset 3px 0 0 #16A34A; }
+.golf-table .course { text-align:left; font-weight:800; color:#123021; white-space:nowrap; }
+.golf-table a.course-link { color:#123021; font-weight:800; text-decoration:none; cursor:pointer;
+    border-bottom:1px dashed #9bc4a8; }
+.golf-table a.course-link:hover { color:#12a350; border-bottom-color:#12a350; }
+#tt-detail { position:relative; top:-70px; }
+.golf-table .dt { white-space:nowrap; }
+.golf-table .cad { white-space:nowrap; line-height:1.35; }
+.golf-table .rank { color:#9bb0a0; font-weight:800; width:34px; font-family:'Montserrat',sans-serif; }
+.golf-table .money { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.golf-table .total { text-align:right; white-space:nowrap; font-weight:800; color:#12a350; font-variant-numeric:tabular-nums; }
+.badge { padding:3px 11px; border-radius:999px; font-size:12px; font-weight:700; color:#fff; }
+.req { font-size:11px; margin-top:4px; font-weight:700; }
+.best-badge { background:#F5A524; color:#3a2600; padding:2px 8px; border-radius:6px; font-size:11px;
+    font-weight:800; margin-left:8px; display:inline-block; white-space:nowrap; }
+.deal-price { color:#e0352b; font-weight:800; }
+.loop { background:#fef3c7; color:#92580a; padding:1px 6px; border-radius:6px; font-size:11px; font-weight:800; }
+.src-pill { background:#eef3ea; color:#4f6a57; padding:3px 10px; border-radius:7px; font-size:12.5px;
+    font-weight:600; display:inline-block; white-space:nowrap; }
+.book-btn { background:#16A34A; color:#fff !important; padding:6px 14px; border-radius:9px; font-weight:800;
+    text-decoration:none; font-size:13px; display:inline-block; white-space:nowrap;
+    box-shadow:0 4px 12px -4px rgba(22,163,74,.6); }
+.book-btn:hover { background:#12b552; }
+
+/* ---------- 특가 팝업 ---------- */
+.deal-lead { color:#3c6b47; font-size:14.5px; margin:0 0 6px; }
+.deal-row { display:flex; align-items:center; justify-content:space-between; gap:14px;
+    background:#f7fcf4; border:1px solid #dcebd5; border-radius:14px; padding:14px 18px; margin-bottom:10px; }
+.deal-row .name { font-weight:800; color:#123021; font-size:15px; }
+.deal-row .meta { color:#5c7565; font-size:12.5px; margin-top:3px; }
+.deal-row .pr { font-family:'Montserrat',sans-serif; font-size:20px; font-weight:800; color:#e0352b; }
+.tag-req { padding:3px 9px; border-radius:999px; font-size:11.5px; font-weight:800; color:#fff; }
+
+[data-testid="stSidebar"] { background:#f4faf1; border-right:1px solid #d8e8d1; }
+/* 사이드바 위쪽 빈 여백 최소화(로고를 위로 바짝 끌어올림) */
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-top: 0 !important; }
+section[data-testid="stSidebar"] > div:first-child { padding-top: 0 !important; margin-top: 0 !important; }
+section[data-testid="stSidebar"] .block-container { padding-top: 0 !important; }
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] { padding-top: 0 !important;
+    padding-bottom: 0 !important; min-height: 0 !important; height: 0 !important; }
+
+/* ---------- 사이드바 로고 (웅SCANNER) - 그래피티 · 다채색 · 임팩트 ---------- */
+.logo-wrap { position:relative; padding:0 2px 16px; margin-bottom:8px; border-bottom:1px solid #d8e8d1;
+    text-align:center; }
+@keyframes ungpop {
+    0%,100% { transform: rotate(-5deg) scale(1);
+        filter: drop-shadow(2px 3px 0 #111) drop-shadow(0 0 10px rgba(255,90,0,.45)); }
+    50%     { transform: rotate(-5deg) scale(1.06);
+        filter: drop-shadow(3px 4px 0 #111) drop-shadow(0 0 20px rgba(255,180,0,.7)); }
+}
+.logo-ung {
+    display:inline-block; font-family:'Black Han Sans', sans-serif;
+    font-size:104px; line-height:.84; letter-spacing:-1px;
+    background: linear-gradient(135deg,#ff2d55 0%,#ff9500 26%,#ffd60a 48%,#34c759 70%,#0a84ff 100%);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+    animation: ungpop 1.7s ease-in-out infinite;
+}
+.logo-scan { display:block; margin-top:2px; line-height:1; white-space:nowrap; }
+.logo-scan span {
+    font-family:'Bungee', cursive; font-size:33px; letter-spacing:.5px;
+    -webkit-text-stroke:1.4px #141414;
+    text-shadow: 1.5px 1.5px 0 #141414, 3px 3px 0 rgba(0,0,0,.25);
+    animation: scanbob 1.4s ease-in-out infinite;
+}
+@keyframes scanbob { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-3px)} }
+.logo-scan .c1{ -webkit-text-fill-color:#ff3b30; animation-delay:0s; }
+.logo-scan .c2{ -webkit-text-fill-color:#ff9500; animation-delay:.08s; }
+.logo-scan .c3{ -webkit-text-fill-color:#ffcc00; animation-delay:.16s; }
+.logo-scan .c4{ -webkit-text-fill-color:#34c759; animation-delay:.24s; }
+.logo-scan .c5{ -webkit-text-fill-color:#00c7be; animation-delay:.32s; }
+.logo-scan .c6{ -webkit-text-fill-color:#0a84ff; animation-delay:.40s; }
+.logo-scan .c7{ -webkit-text-fill-color:#bf5af2; animation-delay:.48s; }
+.logo-tag { margin-top:11px; font-size:11px; color:#5c7565; font-weight:700; letter-spacing:.3px; }
+
+/* ---------- 특가 다시 보기 버튼(primary) 강조 ---------- */
+.stButton > button { border-radius:12px; font-weight:800; }
+.stButton button[kind="primary"], [data-testid="stBaseButton-primary"] {
+    background:linear-gradient(120deg,#16A34A,#22C55E) !important; color:#fff !important; border:none !important;
+    box-shadow:0 10px 22px -8px rgba(22,163,74,.7); font-size:15px; padding:10px 20px; }
+.stButton button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover {
+    background:linear-gradient(120deg,#12b552,#34e68c) !important; }
+
+/* ---------- 실시간 검색창(st_keyup)에만 높이 40px 적용 (지도 등 다른 컴포넌트는 제외) ---------- */
+iframe[title="st_keyup.st_keyup"] { height: 40px !important; display:block; margin:0 !important; }
+[data-testid="stCustomComponentV1"]:has(iframe[title="st_keyup.st_keyup"]) {
+    height: 40px !important; margin-bottom:0 !important; }
+
+/* ---------- 지도탭: CC 검색 결과 스크롤 목록 ---------- */
+.cc-list { max-height: 400px; overflow-y:auto; border:1px solid #dcebd5; border-radius:12px;
+    background:#fff; padding:4px; box-shadow:0 8px 20px -16px rgba(40,120,60,.5); }
+.cc-item { padding:9px 12px; border-bottom:1px solid #eef3ea; font-weight:700; color:#123021; font-size:13.5px; }
+.cc-item:last-child { border-bottom:none; }
+.cc-sub { color:#7a8f80; font-weight:500; font-size:12px; }
+.cc-empty { padding:18px; text-align:center; color:#7a8f80; }
+
+/* ---------- 날씨: 시간대별 수치 스트립 ---------- */
+.hour-strip { display:flex; gap:8px; overflow-x:auto; padding:6px 2px 12px; }
+.hour-cell { min-width:74px; flex:0 0 auto; background:#fff; border:1px solid #dcebd5; border-radius:14px;
+    padding:12px 8px; text-align:center; box-shadow:0 6px 16px -14px rgba(40,120,60,.5); }
+.hour-cell .hh { font-size:12.5px; color:#5c7565; font-weight:700; }
+.hour-cell .ic { font-size:24px; margin:6px 0 4px; }
+.hour-cell .tt { font-family:'Montserrat',sans-serif; font-size:18px; font-weight:800; color:#12321f; }
+.hour-cell .rr { font-size:12px; color:#2563eb; margin-top:5px; font-weight:600; }
+.hour-cell .ww { font-size:12px; color:#5c7565; margin-top:2px; font-weight:600; }
+.wcard-sub { font-size:12.5px; color:#5c7565; margin-top:4px; font-weight:600; }
+
+/* ---------- 모바일(좁은 화면) 배율 맞춤 ---------- */
+@media (max-width: 640px) {
+    .block-container { padding-left:0.6rem !important; padding-right:0.6rem !important; padding-top:0.8rem; }
+    .hero { padding:20px 18px; border-radius:18px; margin-bottom:16px; }
+    .hero-kick { font-size:10.5px; margin-bottom:8px; padding:4px 10px; }
+    .hero h1 { font-size:25px; letter-spacing:-.5px; line-height:1.08; }
+    .hero p { font-size:12.5px; margin-top:8px; }
+    .hero .flag { font-size:60px; right:12px; top:50%; }
+    .hero .chip { font-size:12px; padding:7px 12px; margin-top:12px; }
+    .kpi-grid { grid-template-columns:repeat(2,1fr) !important; gap:10px; margin-bottom:16px; }
+    .kpi-card { padding:14px 14px; border-radius:14px; }
+    .kpi-card .ico { width:32px; height:32px; font-size:16px; margin-bottom:8px; }
+    .kpi-card .value { font-size:21px; }
+    .kpi-card .label { font-size:12px; }
+    .stTabs [data-baseweb="tab"] { padding:8px 10px; font-size:13px; }
+    .logo-ung { font-size:82px; }
+    .logo-scan span { font-size:26px; }
+    h1, h2, h3 { word-break:keep-all; }
+}
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
+
+CADDIE_COLORS = {"캐디": "#16A34A", "노캐디": "#64748B", "캐디선택가능": "#D97706"}
+CADDIE_OPTIONS = ["캐디", "노캐디", "캐디선택가능"]
+WEATHER_EMOJI = {"맑음": "☀️", "구름많음": "☁️", "구름조금": "🌤️", "구름 조금": "🌤️",
+                 "대체로 흐림": "⛅", "흐림": "☁️", "안개": "🌫️", "이슬비": "🌦️",
+                 "약한 비": "🌦️", "소나기": "🌧️", "뇌우": "⛈️",
+                 "비": "🌧️", "눈": "🌨️", "구름": "⛅"}
+
+
+def wemoji(text: str) -> str:
+    for k, v in WEATHER_EMOJI.items():
+        if k in (text or ""):
+            return v
+    return "🌡️"
+
+
+def caddie_badge(raw: str) -> str:
+    """티스캐너 캐디 문자열(하우스캐디/노캐디/선택 등) → 색상 배지 HTML."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if "노" in raw or raw.lower().startswith("no"):
+        color = "#16A34A"      # 노캐디
+    elif "선택" in raw:
+        color = "#D97706"      # 선택 가능
+    else:
+        color = "#DC2626"      # 하우스/동반 = 캐디 필수
+    return f"<span class='tag-req' style='background:{color}'>{raw}</span>"
+
+
+def caddie_req(caddie: str) -> tuple[str, str]:
+    """캐디 옵션 → (라벨, 색)."""
+    if caddie == "노캐디":
+        return "노캐디", "#16A34A"
+    if caddie == "캐디선택가능":
+        return "선택 가능", "#D97706"
+    return "캐디 필수", "#DC2626"
+
+
+def holes_label(h: int) -> str:
+    """홀수 표시 → 18홀 완주 기준 반복 표기. (9홀은 2회, 6홀은 3회 돌아 18홀)"""
+    if h == 9:
+        return "9홀 <span class='loop'>×2</span>"
+    if h == 6:
+        return "6홀 <span class='loop'>×3</span>"
+    return f"{h}홀"
+
+
+def dismissed_today() -> bool:
+    # 세션 기준(사람별). 새로고침하면 다시 뜸. 여러 명이 써도 서로 영향 없음.
+    return st.session_state.get("popup_dismissed") == TODAY.isoformat()
+
+
+def dismiss_today() -> None:
+    st.session_state.popup_dismissed = TODAY.isoformat()
+
+
+@st.cache_data(ttl=600)
+def load_data(use_sample: bool, date_keys: tuple) -> pd.DataFrame:
+    """지도·날씨 탭용 골프장 카탈로그(좌표 포함 샘플). 실데이터는 티스캐너에서 별도로 가져옴."""
+    dates = [dt.date.fromisoformat(x) for x in date_keys]
+    df = D.make_sample_for_dates(dates)
+    return add_total_cost(df)
+
+
+@st.cache_data(ttl=600)
+def load_month_deals(use_sample: bool) -> pd.DataFrame:
+    """오늘부터 30일간의 특가(그린피 7만원 이하) 매물을 모아 가격 낮은 순으로 반환."""
+    dates = [TODAY + dt.timedelta(days=i) for i in range(30)]
+    dfm = load_data(use_sample, tuple(d.isoformat() for d in dates))
+    return (dfm[dfm["green_fee"] <= DEAL_LIMIT_PRICE]
+            .sort_values(["green_fee", "date", "tee_time"]).head(18).reset_index(drop=True))
+
+
+@st.cache_data(ttl=1800)
+def weather_raw(lat: float, lon: float) -> dict | None:
+    """Open-Meteo 예보 원본(캐시 30분). 키 불필요."""
+    return wx.fetch_openmeteo(lat, lon, days=16)
+
+
+@st.cache_data(ttl=300)
+def ts_deals(date: str, region: str, tokens) -> pd.DataFrame:
+    """티스캐너 실시간 특가(캐시 5분). tokens는 사람별 세션 토큰(또는 None=공유)."""
+    return ts.deals_dataframe(date, region, tokens=tokens)
+
+
+@st.cache_data(ttl=180)
+def ts_tee_times(date: str, seq: int, tokens) -> pd.DataFrame:
+    """티스캐너 골프장별 실제 티타임(캐시 3분)."""
+    return ts.tee_times_dataframe(seq, date, tokens=tokens)
+
+
+@st.cache_data(ttl=600)
+def ts_search(keyword: str, tokens) -> pd.DataFrame:
+    """티스캐너 골프장 이름 검색(캐시 10분). 전국 골프장 아무거나 검색용."""
+    return ts.search_dataframe(keyword, tokens=tokens)
+
+
+@st.cache_data(ttl=86400)
+def ts_catalog() -> pd.DataFrame:
+    """전국 골프장 목록(golf_clubs_ts.json)을 로드. 없으면 빈 DF."""
+    return pd.DataFrame(CAT.load())
+
+
+@st.cache_data(ttl=3600)
+def ts_scan(date: str) -> pd.DataFrame:
+    """해당 날짜의 '전국 최저가 스캔' 결과(scan_<날짜>.json) 로드. 없으면 빈 DF."""
+    return pd.DataFrame(SCAN.load(date))
+
+
+@st.cache_data(ttl=300)
+def ts_all_deals(date: str, tokens) -> pd.DataFrame:
+    """6개 권역 실시간 특가를 한 번에 모아 골프장별 최저 그린피 목록으로 반환(캐시 5분)."""
+    frames = []
+    errs = []
+    for kr, code in ts.REGION_MAP.items():
+        try:
+            d = ts.deals_dataframe(date, code, tokens=tokens)
+        except Exception as e:
+            errs.append(f"{kr}({code}): {type(e).__name__} {e}")
+            continue
+        if len(d):
+            d = d.copy()
+            d["region_kr"] = kr
+            frames.append(d)
+    if not frames:
+        # 모든 권역이 오류면 사유를 올려서 화면에 표시(캐시 안 됨). 정상인데 0곳이면 빈 DF.
+        if errs:
+            raise RuntimeError(" | ".join(errs[:6]))
+        return pd.DataFrame()
+    alld = pd.concat(frames, ignore_index=True)
+    # 같은 골프장(seq)이 여러 권역에 잡히면 최저가 1건만 유지
+    alld = alld.sort_values("min_cost").drop_duplicates("seq", keep="first")
+    return alld.sort_values("min_cost").reset_index(drop=True)
+
+
+@st.cache_data(ttl=180)
+def ts_cheapest_caddie(date: str, seq: int, tokens) -> str:
+    """특가(추천)에는 캐디 필드가 없어, 해당 골프장 최저가 티타임의 캐디를 읽어옴(캐시 3분)."""
+    try:
+        d = ts.tee_times_dataframe(int(seq), date, tokens=tokens)
+    except Exception:
+        return ""
+    d = d[d["green_fee"].notna()]
+    if not len(d):
+        return ""
+    row = d.loc[d["green_fee"].idxmin()]
+    return str(row.get("caddie") or "")
+
+
+def filter_tee_times(ttdf: pd.DataFrame, am: bool, night: bool) -> pd.DataFrame:
+    """실제 티타임 표에 오전(12시 이전)·야간(17시 이후) 필터 적용."""
+    if not len(ttdf) or not (am or night):
+        return ttdf
+    def _hr(t):
+        s = str(t).strip()
+        return int(s[:2]) if len(s) >= 2 and s[:2].isdigit() else -1
+    h = ttdf["time"].map(_hr)
+    out = ttdf
+    if am:
+        out = out[h < 12]
+    if night:
+        out = out[h >= 17]
+    return out.reset_index(drop=True)
+
+
+def tee_time_table_html(ttdf: pd.DataFrame) -> str:
+    """티스캐너 티타임 DataFrame → HTML 테이블(지역별 특가/골프장 검색 공용)."""
+    trows = []
+    for _, t in ttdf.iterrows():
+        gf = f"{int(t['green_fee']):,}원" if pd.notna(t["green_fee"]) else "-"
+        gf_html = (f"<span class='deal-price'>{gf}</span>"
+                   if (pd.notna(t["green_fee"]) and t["green_fee"] <= DEAL_LIMIT_PRICE) else gf)
+        org = (f"<span style='color:#9bb0a0;text-decoration:line-through;font-size:12px'>{int(t['origin']):,}</span>"
+               if t["discount"] and pd.notna(t["origin"]) and t["origin"] != t["green_fee"] else "")
+        trows.append(
+            f"<tr><td class='dt' style='font-weight:800'>{t['time']}</td>"
+            f"<td class='money'>{gf_html} {org}</td>"
+            f"<td>{t['caddie']}</td><td>{t['course']}</td><td>{t['people']}인</td>"
+            f"<td><a class='book-btn' href='https://www.teescanner.com' target='_blank' rel='noopener'>예약</a></td></tr>"
+        )
+    return (
+        "<div class='table-wrap'><table class='golf-table'><thead><tr>"
+        "<th>티타임</th><th>그린피</th><th>캐디</th><th>코스</th><th>인원</th><th>예약</th>"
+        "</tr></thead><tbody>" + "".join(trows) + "</tbody></table></div>"
+    )
+
+
+def month_dates(year: int, month: int) -> list[dt.date]:
+    last = calendar.monthrange(year, month)[1]
+    return [d for d in (dt.date(year, month, i) for i in range(1, last + 1)) if d >= TODAY]
+
+
+def kpi(ico: str, label: str, value: str, hl: bool = False) -> str:
+    cls = "kpi-card hl" if hl else "kpi-card"
+    return (f"<div class='{cls}'><div class='ico'>{ico}</div>"
+            f"<div class='label'>{label}</div><div class='value'>{value}</div></div>")
+
+
+# ============================ 특가 팝업(모달) ============================
+@st.dialog("🔥 이 달의 특가", width="large")
+def deal_popup(deals: pd.DataFrame):
+    st.markdown(f"<p class='deal-lead'>앞으로 <b>{MONTH_RANGE_LABEL}</b> 안에 예약 가능한 특가 매물이에요. "
+                "<b>날짜</b>와 <b>캐디 필수 여부</b>를 확인하고 바로 예약하세요.</p>", unsafe_allow_html=True)
+    rows = []
+    for _, r in deals.iterrows():
+        req_label, req_color = caddie_req(r["caddie"])
+        rows.append(
+            f"<div class='deal-row'>"
+            f"<div><div class='name'>{r['course']} <span style='color:#7a8f80;font-weight:600'>· {r['region']}</span></div>"
+            f"<div class='meta'>📅 {r['date']} {r['tee_time']} · 출처 {r['source']}</div></div>"
+            f"<div style='text-align:right;display:flex;align-items:center;gap:14px'>"
+            f"<span class='tag-req' style='background:{req_color}'>{req_label}</span>"
+            f"<div class='pr'>{r['green_fee']:,}원</div>"
+            f"<a class='book-btn' href='{r['booking_url']}' target='_blank' rel='noopener'>예약</a>"
+            f"</div></div>"
+        )
+    st.markdown("".join(rows), unsafe_allow_html=True)
+    st.divider()
+    if st.checkbox("오늘 하루동안 이 창을 열지 않습니다"):
+        dismiss_today()
+        st.rerun()
+
+
+@st.dialog("🔥 오늘의 전국 특가", width="large")
+def deal_popup_real(deals: pd.DataFrame, date: str, tokens=None):
+    """티스캐너 실시간 특가(선택 날짜, 전국 최저가 순) 팝업."""
+    st.markdown(f"<p class='deal-lead'><b>{date}</b> 기준 전국에서 가장 저렴한 <b>실시간</b> 특가예요. "
+                "<b>캐디 여부</b>를 확인하고 티스캐너에서 바로 예약하세요.</p>", unsafe_allow_html=True)
+    cols = deals.columns
+    rows = []
+    with st.spinner("특가 정보 확인 중..."):
+        for _, r in deals.iterrows():
+            price = f"{int(r['min_cost']):,}원" if pd.notna(r["min_cost"]) else "-"
+            region = r["region_kr"] if "region_kr" in cols and pd.notna(r.get("region_kr")) else r.get("region", "")
+            # 캐디: 스캔 결과엔 캐디 컬럼이 있음. 없으면(추천특가) 최저가 티타임에서 조회.
+            if "caddie" in cols and str(r.get("caddie") or "").strip():
+                cad_raw = r["caddie"]
+            else:
+                cad_raw = ts_cheapest_caddie(date, int(r["seq"]), tokens) if pd.notna(r.get("seq")) else ""
+            cad = caddie_badge(cad_raw)
+            # 부가정보(구분·지역·평점) 있는 것만 조합
+            bits = []
+            if "gubun" in cols and pd.notna(r.get("gubun")):
+                bits.append(str(r["gubun"]))
+            if r.get("area"):
+                bits.append(str(r["area"]))
+            if "review" in cols and pd.notna(r.get("review")):
+                bits.append(f"⭐{r['review']}")
+            elif "score" in cols and pd.notna(r.get("score")):
+                bits.append(f"⭐{r['score']}")
+            if "time" in cols and str(r.get("time") or "").strip():
+                bits.append(f"⛳{r['time']}")
+            meta = " · ".join(bits)
+            rows.append(
+                f"<div class='deal-row'>"
+                f"<div><div class='name'>{r['course']} <span style='color:#7a8f80;font-weight:600'>· {region}</span></div>"
+                f"<div class='meta'>{meta}</div></div>"
+                f"<div style='text-align:right;display:flex;align-items:center;gap:14px'>"
+                f"{cad}<div class='pr'>{price}</div>"
+                f"<a class='book-btn' href='https://www.teescanner.com' target='_blank' rel='noopener'>예약</a>"
+                f"</div></div>"
+            )
+    st.markdown("".join(rows), unsafe_allow_html=True)
+    st.divider()
+    if st.checkbox("오늘 하루동안 이 창을 열지 않습니다"):
+        dismiss_today()
+        st.rerun()
+
+
+# 데이터 소스: 지도·날씨 탭은 좌표가 필요해 골프장 카탈로그(샘플) 사용. 티타임/가격은 티스캐너 실데이터.
+USE_SAMPLE = True
+
+# ============================ 사이드바 ============================
+with st.sidebar:
+    st.markdown("""
+    <div class="logo-wrap">
+      <div class="logo-ung">웅</div>
+      <div class="logo-scan">
+        <span class="c1">S</span><span class="c2">C</span><span class="c3">A</span><span class="c4">N</span><span class="c5">N</span><span class="c6">E</span><span class="c7">R</span>
+      </div>
+      <div class="logo-tag">⛳ 전국 골프장 티타임 통합검색</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ---------- 티스캐너 로그인 (각자 자기 계정) ----------
+    _logged_in = bool(st.session_state.get("user_tokens"))
+    with st.expander("👤 티스캐너 로그인", expanded=not _logged_in):
+        if _logged_in:
+            st.success(f"{st.session_state.get('user_name', '회원')}님 로그인됨")
+            if st.button("로그아웃", key="logout_btn", width="stretch"):
+                st.session_state.pop("user_tokens", None)
+                st.session_state.pop("user_name", None)
+                st.rerun()
+        else:
+            st.caption("본인 티스캐너 계정으로 로그인하면 실시간 데이터가 나와요.")
+            lid = st.text_input("아이디(전화번호)", key="login_id", placeholder="01012345678")
+            lpw = st.text_input("비밀번호", type="password", key="login_pw")
+            if st.button("로그인", key="login_btn", type="primary", width="stretch"):
+                if not lid.strip() or not lpw:
+                    st.warning("아이디와 비밀번호를 모두 입력하세요.")
+                else:
+                    try:
+                        res = ts.login(lid.strip(), lpw)
+                        st.session_state.user_tokens = (res["x_token"], res["x_refresh_token"])
+                        st.session_state.user_name = res["name"]
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"로그인 실패: {e}")
+
+    st.markdown("### ⛳ 검색 필터")
+
+    st.markdown("#### 📅 날짜 선택")
+    mode = st.radio("조회 방식", ["특정 날짜", "월간 검색"], horizontal=True, label_visibility="collapsed")
+    if mode == "특정 날짜":
+        picked = st.date_input("날짜", value=TODAY, min_value=TODAY,
+                               max_value=TODAY.replace(year=TODAY.year + 5), format="YYYY-MM-DD")
+        target_dates = [picked]
+        period_label = picked.isoformat()
+    else:
+        years = list(range(TODAY.year, TODAY.year + 5))
+        ycol, mcol = st.columns(2)
+        year = ycol.selectbox("연도", years, format_func=lambda y: f"{y}년")
+        month_opt = mcol.selectbox("월", ["전체"] + [f"{m}월" for m in range(1, 13)])
+        if month_opt == "전체":
+            target_dates = [d for m in range(1, 13) for d in month_dates(year, m)]
+            period_label = f"{year}년 전체"
+        else:
+            target_dates = month_dates(year, int(month_opt.replace("월", "")))
+            period_label = f"{year}년 {month_opt}"
+    date_capped = len(target_dates) > MAX_DATES
+    if date_capped:
+        target_dates = target_dates[:MAX_DATES]
+    st.divider()
+
+    df = load_data(USE_SAMPLE, tuple(d.isoformat() for d in target_dates))
+    regions = ["전체"] + (sorted(df["region"].unique().tolist()) if len(df) else [])
+    region = st.selectbox("지역", regions)
+    st.markdown("**선택 옵션**")
+    caddie_opt = [opt for opt in CADDIE_OPTIONS if st.checkbox(opt, value=True, key=f"cad_{opt}")]
+    only_am = st.checkbox("오전 티타임만 (12시 이전)", value=False)
+    only_night = st.checkbox("야간 티타임만 (17시 이후)", value=False)
+
+# ============================ 필터 적용 ============================
+f = df.copy()
+if region != "전체":
+    f = f[f["region"] == region]
+f = f[f["caddie"].isin(caddie_opt)]
+if only_am and len(f):
+    f = f[f["tee_time"].str.slice(0, 2).astype(int) < 12]
+if only_night and len(f):
+    f = f[f["tee_time"].str.slice(0, 2).astype(int) >= 17]
+f = f.reset_index(drop=True)
+
+# ============================ 실시간(티스캐너) 데이터 ============================
+# 사람별 세션 토큰(로그인). 없으면 None → 전역(공유 secrets/파일) 토큰 사용.
+USER_TOKENS = st.session_state.get("user_tokens")
+REAL = bool(USER_TOKENS) or ts.has_token()
+real_date = target_dates[0].isoformat() if target_dates else TODAY.isoformat()
+real_all = pd.DataFrame()
+real_err = ""
+if REAL:
+    try:
+        real_all = ts_all_deals(real_date, USER_TOKENS)
+        if not len(real_all):
+            real_err = f"{real_date} 특가가 0곳으로 조회됨(날짜를 바꿔보세요)"
+    except Exception as e:
+        real_err = str(e)
+USE_REAL = REAL and len(real_all) > 0
+
+# 전국 최저가 스캔(전체 골프장 훑어 계산한 실제 최저가). 있으면 특가/KPI/팝업의 기준이 됨.
+scan_df = ts_scan(real_date) if REAL else pd.DataFrame()
+USE_SCAN = REAL and len(scan_df) > 0
+
+# ============================ 히어로 ============================
+if USE_SCAN:
+    chip = (f"📅 {real_date} · 전국 · 골프장 {len(scan_df):,}곳 · "
+            f"<b>🔴 전국 최저가 스캔</b>")
+elif USE_REAL:
+    chip = (f"📅 {real_date} · 전국 · 골프장 {real_all['seq'].nunique():,}곳 · "
+            f"<b>🔴 티스캐너 추천 특가</b>")
+else:
+    chip = f"📅 {period_label} · {region} · 티타임 {len(f):,}건 · 샘플 데이터"
+st.markdown(f"""
+<div class="hero">
+  <div class="flag">⛳</div>
+  <div class="hero-kick">🔴 실시간 티타임 · 캐디 · 최저가</div>
+  <h1>전국 골프장<br>티타임 통합검색</h1>
+  <p>싱그러운 페어웨이 위, 실시간 그린피 · 캐디 포함여부를 한눈에</p>
+  <span class="chip">{chip}</span>
+</div>
+""", unsafe_allow_html=True)
+
+if REAL and not USE_REAL:
+    st.warning(f"⚠️ 티스캐너 실시간 특가를 불러오지 못해 **샘플 데이터**로 표시 중이에요.\n\n"
+               f"사유: {real_err}")
+
+# ============================ 특가 팝업 (접속 시 1회 + 다시 보기 버튼) ============================
+if USE_SCAN:
+    pop_deals = (scan_df[scan_df["min_cost"].notna()]
+                 .sort_values("min_cost").head(10).reset_index(drop=True))
+    reopen_label = "🔥 전국 최저가 다시 보기"
+elif USE_REAL:
+    pop_deals = (real_all[real_all["min_cost"].notna()]
+                 .sort_values("min_cost").head(10).reset_index(drop=True))
+    reopen_label = "🔥 전국 실시간 특가 다시 보기"
+else:
+    pop_deals = load_month_deals(USE_SAMPLE)
+    reopen_label = "🔥 이 달의 특가 다시 보기"
+
+rbc1, rbc2 = st.columns([1.8, 3])
+with rbc1:
+    if st.button(reopen_label, type="primary", key="reopen_deals"):
+        st.session_state.show_popup_now = True
+
+first_load = not st.session_state.get("popup_seen", False)
+if len(pop_deals) and ((first_load and not dismissed_today()) or st.session_state.get("show_popup_now", False)):
+    st.session_state.popup_seen = True
+    st.session_state.show_popup_now = False
+    if USE_SCAN or USE_REAL:
+        deal_popup_real(pop_deals, real_date, USER_TOKENS)
+    else:
+        deal_popup(pop_deals)
+
+if date_capped:
+    st.caption(f"⚡ 성능 보호를 위해 선택 기간 중 앞 {MAX_DATES}일만 불러왔습니다.")
+
+# ============================ KPI ============================
+if USE_SCAN:
+    sc = scan_df[scan_df["min_cost"].notna()]
+    n_deal = int((sc["min_cost"] <= DEAL_LIMIT_PRICE).sum()) if len(sc) else 0
+    cards = (
+        kpi("🏷️", "전국 최저가", f"{int(sc['min_cost'].min()):,}원" if len(sc) else "-", hl=True)
+        + kpi("📊", "평균 최저가", f"{int(sc['min_cost'].mean()):,}원" if len(sc) else "-")
+        + kpi("📍", "예약가능 골프장", f"{len(scan_df)}곳")
+        + kpi("🔥", "특가(7만↓)", f"{n_deal}곳")
+    )
+    st.markdown(f"<div class='kpi-grid'>{cards}</div>", unsafe_allow_html=True)
+elif USE_REAL:
+    ra = real_all[real_all["min_cost"].notna()]
+    cards = (
+        kpi("🏷️", "실시간 최저가", f"{int(ra['min_cost'].min()):,}원" if len(ra) else "-", hl=True)
+        + kpi("📊", "평균 최저가", f"{int(ra['min_cost'].mean()):,}원" if len(ra) else "-")
+        + kpi("📍", "골프장 수", f"{real_all['seq'].nunique()}곳")
+        + kpi("🔥", "추천 특가", f"{len(real_all)}곳")
+    )
+    st.markdown(f"<div class='kpi-grid'>{cards}</div>", unsafe_allow_html=True)
+elif len(f):
+    cards = (
+        kpi("🏷️", "최저 그린피", f"{f['green_fee'].min():,}원", hl=True)
+        + kpi("📊", "평균 그린피", f"{int(f['green_fee'].mean()):,}원")
+        + kpi("📍", "골프장 수", f"{f['course'].nunique()}곳")
+        + kpi("⛳", "티타임 수", f"{len(f):,}건")
+    )
+    st.markdown(f"<div class='kpi-grid'>{cards}</div>", unsafe_allow_html=True)
+else:
+    st.warning("조건에 맞는 티타임이 없습니다. 날짜 또는 필터를 바꿔보세요.")
+
+tab1, tab2, tab3, tab4 = st.tabs(["📋 티타임 목록", "🗺️ 지도 & 차트", "☀️ 날씨 예보", "🔍 골프장 검색"])
+
+# ---------------- 탭 1: 목록 ----------------
+with tab1:
+    t1mode = st.radio("보기 방식", ["🔥 전국 최저가", "🌏 전국 전체 골프장"],
+                      horizontal=True, key="t1mode", label_visibility="collapsed") if REAL else None
+    if REAL and t1mode == "🔥 전국 최저가":
+        st.markdown("<div id='scan-top'></div>", unsafe_allow_html=True)
+        st.markdown("##### 🔥 전국 최저가 (전체 골프장 스캔 기준)")
+        cat_df0 = ts_catalog()
+        n_catalog = len(cat_df0)
+
+        sb1, sb2 = st.columns([1.5, 3], vertical_alignment="center")
+        with sb1:
+            scan_clicked = st.button(f"⚡ {real_date} 전국 최저가 스캔",
+                                     type="primary", key="scan_btn", disabled=(n_catalog == 0))
+        with sb2:
+            if USE_SCAN:
+                st.caption(f"✅ 스캔 완료 · {len(scan_df):,}곳 예약가능 · 버튼을 누르면 최신가로 갱신돼요")
+            elif n_catalog:
+                st.caption(f"전국 {n_catalog:,}곳을 훑어 실제 최저가를 계산해요 (약 1~2분 · 날짜별 1회 저장)")
+            else:
+                st.caption("먼저 '🌏 전국 전체 골프장'에서 목록을 만들어 주세요")
+
+        if scan_clicked and n_catalog:
+            bar = st.progress(0.0, text="전국 최저가 스캔 중...")
+            rows = SCAN.scan_prices(
+                cat_df0.to_dict("records"), real_date, tokens=USER_TOKENS,
+                progress=lambda i, n, found: bar.progress(i / n, text=f"스캔 중... {i}/{n} · {found}곳 가격확인"))
+            SCAN.save(real_date, rows)
+            ts_scan.clear()
+            bar.empty()
+            st.session_state.scan_just_done = True
+            st.rerun()
+
+        if USE_SCAN:
+            sdf = scan_df.copy()
+            regions_s = ["전체"] + sorted([x for x in sdf["region"].unique() if x])
+            hc1, hc2, hc3 = st.columns([3, 1.2, 1.3], vertical_alignment="bottom")
+            with hc1:
+                squery = st_keyup("검색", placeholder="🔍 골프장 검색 (예: 이글밸리, CC)",
+                                  debounce=200, label_visibility="collapsed", key="scan_search")
+            with hc2:
+                sreg = st.selectbox("지역", regions_s, label_visibility="collapsed", key="scan_region")
+            with hc3:
+                ssort = st.selectbox("정렬", ["가격 낮은순", "가격 높은순"],
+                                     label_visibility="collapsed", key="scan_sort")
+            sv = sdf
+            if sreg != "전체":
+                sv = sv[sv["region"] == sreg]
+            if squery:
+                sv = sv[sv["course"].str.contains(squery.strip(), case=False, na=False)]
+            sv = sv.sort_values("min_cost", ascending=(ssort == "가격 낮은순")).reset_index(drop=True)
+
+            if not len(sv):
+                st.info("조건에 맞는 골프장이 없어요. 지역이나 검색어를 바꿔보세요.")
+            else:
+                st.caption(f"전국 {len(sv):,}곳 · 표에서 **골프장 행을 클릭**하면 하단에 티타임 상세가 나와요.")
+                has_cname = "course_name" in sv.columns
+                best_price = sdf["min_cost"].min()
+                rows = []
+                for _, r in sv.iterrows():
+                    cname = (_html.unescape(str(r["course_name"]))
+                             if has_cname and pd.notna(r.get("course_name")) and str(r["course_name"]).strip()
+                             else "-")
+                    rows.append({
+                        "course": str(r["course"]),
+                        "area": str(r["area"]),
+                        "min_cost": int(r["min_cost"]),
+                        "course_name": cname,
+                        "caddie": str(r["caddie"] or ""),
+                        "score": (None if pd.isna(r["score"]) else float(r["score"])),
+                        "is_deal": bool(r["min_cost"] <= DEAL_LIMIT_PRICE),
+                        "is_best": bool(r["min_cost"] == best_price),
+                    })
+                selected = st.session_state.get("scan_sel_course")
+                clicked = _scan_table(rows=rows, selected=selected, key="scan_tbl", default=None)
+                if clicked:
+                    st.session_state.scan_sel_course = clicked
+                    selected = clicked
+
+                if selected and (sv["course"] == selected).any():
+                    detail_course = selected
+                else:
+                    detail_course = sv.iloc[0]["course"]
+
+                # ---- 골프장별 티타임 상세 (행 클릭 → 여기로 스크롤) ----
+                st.divider()
+                st.markdown("<div id='tt-detail'></div>", unsafe_allow_html=True)
+                st.markdown(f"###### ⛳ {detail_course} · 티타임 상세")
+                if not selected:
+                    st.caption("👆 위 표에서 골프장 행을 클릭하면 그 골프장으로 바뀌어요. (지금은 최저가 골프장)")
+                sel = sv[sv["course"] == detail_course].iloc[0]
+                try:
+                    ttdf = ts_tee_times(real_date, int(sel["seq"]), USER_TOKENS)
+                    ttdf = filter_tee_times(ttdf, only_am, only_night)
+                    if len(ttdf):
+                        st.caption(f"✅ {detail_course} · {real_date} · 티타임 {len(ttdf)}개 (시간순)")
+                        st.markdown(tee_time_table_html(ttdf), unsafe_allow_html=True)
+                    else:
+                        st.info(f"{detail_course}는 {real_date}에 (오전/야간 필터 포함) 예약 가능한 티타임이 없어요.")
+                except Exception as e:
+                    st.warning(f"티타임 상세 불러오기 실패: {e}")
+
+        elif USE_REAL:
+            st.info("아직 이 날짜의 전국 최저가 스캔이 없어요. 위 **⚡ 전국 최저가 스캔**을 누르면 "
+                    "전체 골프장에서 실제 최저가를 뽑아드려요. 아래는 티스캐너 '추천 특가'(빠른 미리보기)예요.")
+            rv = real_all.sort_values("min_cost").reset_index(drop=True)
+            rows_html = []
+            for i, r in rv.iterrows():
+                price = f"{int(r['min_cost']):,}원" if pd.notna(r["min_cost"]) else "-"
+                is_deal = pd.notna(r["min_cost"]) and r["min_cost"] <= DEAL_LIMIT_PRICE
+                price_html = f"<span class='deal-price'>{price}</span>" if is_deal else price
+                review = f"⭐{r['review']}" if pd.notna(r["review"]) else "-"
+                rows_html.append(
+                    f"<tr><td class='rank'>{i + 1}</td>"
+                    f"<td class='course'>{r['course']}</td><td>{r['area']}</td>"
+                    f"<td class='money'>{price_html}</td><td>{r['gubun']}</td><td>{review}</td>"
+                    f"<td style='text-align:left'>{r['benefit']}</td>"
+                    f"<td><a class='book-btn' href='https://www.teescanner.com' target='_blank' rel='noopener'>예약</a></td></tr>"
+                )
+            table = (
+                "<div class='table-wrap'><table class='golf-table'><thead><tr>"
+                "<th>#</th><th>골프장</th><th>지역</th><th>최저 그린피</th><th>구분</th><th>평점</th><th>혜택</th><th>예약</th>"
+                "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table></div>"
+            )
+            st.markdown(table, unsafe_allow_html=True)
+        else:
+            st.warning(f"이 날짜의 실시간 데이터를 불러오지 못했어요. 사유: {real_err or '데이터 없음'}. "
+                       "전국 목록이 있으면 위 스캔 버튼으로 최저가를 만들 수 있어요.")
+
+        # 스캔 직후에는 상세로 튀지 않게 최저가 표 상단으로 화면 고정
+        if st.session_state.pop("scan_just_done", False):
+            components.html(
+                "<script>const t=window.parent.document.getElementById('scan-top');"
+                "if(t) t.scrollIntoView({behavior:'auto', block:'start'});</script>",
+                height=0,
+            )
+
+    elif REAL and t1mode == "🌏 전국 전체 골프장":
+        st.markdown("##### 🌏 전국 전체 골프장 (티스캐너)")
+        cat_df = ts_catalog()
+        if not len(cat_df):
+            st.info("아직 전국 골프장 목록이 없어요. 아래 버튼으로 한 번만 만들면 이후엔 바로 떠요. (약 1분)")
+            if st.button("🌏 전국 골프장 목록 만들기", type="primary", key="cat_build"):
+                bar = st.progress(0.0, text="티스캐너에서 골프장 수집 중...")
+                clubs = CAT.build(tokens=USER_TOKENS, progress=lambda i, n, found:
+                                  bar.progress(i / n, text=f"수집 중... {i}/{n} · {found}곳 발견"))
+                CAT.save(clubs)
+                ts_catalog.clear()
+                bar.empty()
+                st.success(f"{len(clubs)}곳 수집 완료!")
+                st.rerun()
+        else:
+            cat_df = cat_df.copy()
+            cat_df["region"] = cat_df["area"].map(CAT.top_region)
+            regions_c = ["전체"] + sorted([x for x in cat_df["region"].unique() if x])
+            cc1, cc2 = st.columns([3, 1.3], vertical_alignment="bottom")
+            with cc1:
+                catq = st_keyup("검색", placeholder="🔍 골프장 이름 검색 (실시간)",
+                                debounce=200, label_visibility="collapsed", key="cat_search")
+            with cc2:
+                catreg = st.selectbox("지역", regions_c, label_visibility="collapsed", key="cat_region")
+            cv = cat_df
+            if catreg != "전체":
+                cv = cv[cv["region"] == catreg]
+            if catq:
+                cv = cv[cv["course"].str.contains(catq.strip(), case=False, na=False)]
+            cv = cv.reset_index(drop=True)
+            st.caption(f"전국 {len(cat_df):,}곳 중 {len(cv):,}곳 · 골프장을 고르면 {real_date} 실제 티타임이 나와요")
+            if not len(cv):
+                st.info("검색 결과가 없어요. 이름이나 지역을 바꿔보세요.")
+            else:
+                labels = [
+                    f"{r['course']}  ·  {r['area']}" + (f"  ⭐{r['score']}" if pd.notna(r["score"]) else "")
+                    for _, r in cv.iterrows()
+                ]
+                ci = st.selectbox("골프장 선택", range(len(labels)),
+                                  format_func=lambda i: labels[i], key="cat_pick")
+                sel = cv.iloc[ci]
+                if sel.get("address"):
+                    st.caption(f"📍 {sel['address']}")
+                try:
+                    cttdf = ts_tee_times(real_date, int(sel["seq"]), USER_TOKENS)
+                    cttdf = filter_tee_times(cttdf, only_am, only_night)
+                    if len(cttdf):
+                        st.caption(f"✅ {sel['course']} · {real_date} · 티타임 {len(cttdf)}개 (시간순)")
+                        st.markdown(tee_time_table_html(cttdf), unsafe_allow_html=True)
+                    else:
+                        st.info(f"{sel['course']}는 {real_date}에 (오전/야간 필터 포함) 예약 가능한 티타임이 없어요. "
+                                "왼쪽 날짜나 필터를 바꿔보세요.")
+                except Exception as e:
+                    st.warning(f"티타임 불러오기 실패: {e}")
+            st.divider()
+            st.caption(f"※ 전국 목록은 티스캐너 이름검색을 모아 만든 거예요(현재 {len(cat_df):,}곳). "
+                       "더 많이 모으려면 아래 버튼을 누르세요.")
+            if st.button("🔄 전국 목록 다시 수집 (더 많이, 약 1분)", key="cat_rebuild"):
+                bar = st.progress(0.0, text="다시 수집 중...")
+                clubs = CAT.build(tokens=USER_TOKENS, progress=lambda i, n, found:
+                                  bar.progress(i / n, text=f"수집 중... {i}/{n} · {found}곳 발견"))
+                CAT.save(clubs)
+                ts_catalog.clear()
+                bar.empty()
+                st.success(f"{len(clubs)}곳으로 갱신 완료!")
+                st.rerun()
+
+    elif len(f):
+        st.markdown("##### 📋 티타임 목록")
+        hcol2, hcol3 = st.columns([3, 1.3], vertical_alignment="bottom")
+        with hcol2:
+            query = st_keyup("검색", placeholder="🔍 골프장 검색 (예: 이글밸리, CC)",
+                             debounce=200, label_visibility="collapsed", key="course_search")
+        with hcol3:
+            sort_opt = st.selectbox("정렬", ["가격 낮은순", "가격 높은순", "빠른 시간순", "늦은 시간순"],
+                                    label_visibility="collapsed")
+
+        fv = f
+        if query:
+            fv = fv[fv["course"].str.contains(query.strip(), case=False, na=False)]
+
+        if sort_opt == "가격 낮은순":
+            fs = fv.sort_values(["green_fee", "date", "tee_time"])
+        elif sort_opt == "가격 높은순":
+            fs = fv.sort_values(["green_fee", "date", "tee_time"], ascending=[False, True, True])
+        elif sort_opt == "빠른 시간순":
+            fs = fv.sort_values(["tee_time", "date", "green_fee"])
+        else:  # 늦은 시간순
+            fs = fv.sort_values(["tee_time", "date"], ascending=[False, True])
+        fs = fs.reset_index(drop=True)
+
+        if len(fs) == 0:
+            st.info(f"'{query}' 검색 결과가 없어요. 다른 이름으로 검색해보세요.")
+        else:
+            LIMIT = 250
+            view = fs.head(LIMIT)
+            best_price = fs["green_fee"].min()
+            rows_html = []
+            for i, r in view.iterrows():
+                is_best = r["green_fee"] == best_price
+                tr_cls = " class='best'" if is_best else ""
+                badge = f"<span class='badge' style='background:{CADDIE_COLORS.get(r['caddie'], '#666')}'>{r['caddie']}</span>"
+                gf = (f"<span class='deal-price'>{r['green_fee']:,}원</span>"
+                      if r["green_fee"] <= DEAL_LIMIT_PRICE else f"{r['green_fee']:,}원")
+                best_tag = "<span class='best-badge'>최저가</span>" if is_best else ""
+                rows_html.append(
+                    f"<tr{tr_cls}><td class='rank'>{i + 1}</td>"
+                    f"<td class='course'>{r['course']}{best_tag}</td><td>{r['city']}</td>"
+                    f"<td>{holes_label(int(r['holes']))}</td>"
+                    f"<td class='dt'>{r['date'][5:]} {r['tee_time']}</td><td class='money'>{gf}</td>"
+                    f"<td class='cad'>{badge}</td><td class='money'>{r['cart_fee']:,}원</td>"
+                    f"<td><span class='src-pill'>{r['source']}</span></td>"
+                    f"<td><a class='book-btn' href='{r['booking_url']}' target='_blank' rel='noopener'>예약</a></td></tr>"
+                )
+            table = (
+                "<div class='table-wrap'><table class='golf-table'><thead><tr>"
+                "<th>#</th><th>골프장</th><th>지역</th><th>홀</th><th>날짜·티타임</th><th>그린피</th><th>캐디</th>"
+                "<th>카트비</th><th>출처</th><th>예약</th>"
+                "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table></div>"
+            )
+            st.markdown(table, unsafe_allow_html=True)
+            cap = f"💡 {sort_opt} 정렬 · 빨간 그린피는 7만원 이하 특가"
+            if len(fs) > LIMIT:
+                cap += f" · 전체 {len(fs):,}건 중 상위 {LIMIT}건 표시"
+            st.caption(cap)
+
+# ---------------- 탭 2: 지도 & 차트 ----------------
+with tab2:
+    if len(f):
+        courses_df = (f.dropna(subset=["lat", "lon"]).drop_duplicates("course")
+                      .sort_values("course")[["course", "region", "city", "holes", "gubun", "lat", "lon"]])
+        left, right = st.columns([1.35, 1])
+        with right:
+            st.markdown("##### 🔎 골프장(CC) 검색")
+            map_query = st_keyup("CC검색", placeholder="🔍 골프장 이름 검색 (실시간)",
+                                 debounce=200, label_visibility="collapsed", key="map_search")
+            listed = courses_df
+            if map_query:
+                listed = listed[listed["course"].str.contains(map_query.strip(), case=False, na=False)]
+            items = "".join(
+                f"<div class='cc-item'>{r['course']}"
+                f"<span class='cc-sub'> · {r['city']} · {r['holes']}홀 · {r['gubun']}</span></div>"
+                for _, r in listed.iterrows()
+            )
+            st.markdown(f"<div class='cc-list'>{items or '<div class=cc-empty>검색 결과가 없어요</div>'}</div>",
+                        unsafe_allow_html=True)
+            st.caption(f"총 {len(listed):,}곳 · 검색하면 왼쪽 지도에 해당 골프장만 표시돼요")
+        with left:
+            st.markdown("##### 📍 골프장 위치 (OpenStreetMap)")
+            if len(listed):
+                st_folium(folium_map(listed), height=460, use_container_width=True, returned_objects=[])
+            else:
+                st.info("검색 결과가 없어 지도에 표시할 골프장이 없어요.")
+            st.caption("※ 빨간 점을 클릭하면 길찾기 버튼이 나와요. 좌표는 지역 기준 근사값(공공데이터에 좌표 미포함).")
+
+# ---------------- 탭 3: 날씨 ----------------
+with tab3:
+    if len(f):
+        course = st.selectbox("골프장 선택", sorted(f["course"].unique()))
+        row = f[f["course"] == course].iloc[0]
+        st.markdown(f"##### ☀️ {course} ({row['city']}) 날씨 예보")
+
+        raw = weather_raw(float(row["lat"]), float(row["lon"]))
+        real = raw is not None
+        if real:
+            fc = wx.om_daily(raw, days=7)
+            st.caption("✅ 실시간 날씨 예보 (Open-Meteo · 무료)")
+        else:
+            fc = wx.sample_forecast(7)
+            st.caption("※ 인터넷 연결이 없어 샘플 예보입니다.")
+        wdf = pd.DataFrame(fc)
+        if len(wdf):
+            st.markdown("###### 📅 주간 예보")
+            cols = st.columns(min(7, len(wdf)))
+            for i, (_, w) in enumerate(wdf.head(7).iterrows()):
+                with cols[i % len(cols)]:
+                    wind_txt = f"{w['wind']} m/s" if w.get("wind") is not None else "-"
+                    st.markdown(
+                        f"<div class='kpi-card' style='text-align:center;padding:16px 10px'>"
+                        f"<div class='label'>{w['date'][5:]}</div>"
+                        f"<div style='font-size:32px;margin:6px 0'>{wemoji(w['day_text'])}</div>"
+                        f"<div class='value' style='font-size:19px'>{w['max']}° <span style='color:#8fa295'>/ {w['min']}°</span></div>"
+                        f"<div class='wcard-sub'>💧 {w['rain_prob']}%</div>"
+                        f"<div class='wcard-sub'>🌬 {wind_txt}</div></div>",
+                        unsafe_allow_html=True)
+
+            st.markdown("###### ⏰ 시간대별 날씨 (0~23시)")
+            wx_pick = st.date_input("날짜 선택",
+                                    value=TODAY, min_value=TODAY,
+                                    max_value=TODAY.replace(year=TODAY.year + 5),
+                                    format="YYYY-MM-DD", key="wx_date")
+            pick_iso = wx_pick.isoformat()
+            hourly = wx.om_hourly(raw, pick_iso) if real else []
+            if hourly:
+                st.caption(f"{pick_iso} · ✅ 실시간 시간대별 예보 (Open-Meteo)")
+            else:
+                if real:
+                    st.caption(f"{pick_iso}은 예보 범위(약 16일) 밖이라 샘플로 표시합니다.")
+                day = wx.sample_day(pick_iso)
+                hourly = wx.sample_hourly(pick_iso, day["min"], day["max"])
+            cells = [
+                f"<div class='hour-cell'><div class='hh'>{h['hour']}시</div>"
+                f"<div class='ic'>{wemoji(h['sky'])}</div>"
+                f"<div class='tt'>{h['temp']:.0f}°</div>"
+                f"<div class='rr'>💧 {h['rain_prob']}%</div>"
+                f"<div class='ww'>🌬 {h['wind']}</div></div>"
+                for h in hourly
+            ]
+            st.markdown("<div class='hour-strip'>" + "".join(cells) + "</div>", unsafe_allow_html=True)
+            st.caption("가로로 스크롤하면 0시~23시 전체가 보여요 · 숫자: 기온 · 💧강수확률 · 🌬바람(m/s)")
+        else:
+            st.info("예보를 불러오지 못했습니다. 잠시 후 다시 시도하세요.")
+
+# ---------------- 탭 4: 전국 골프장 검색 ----------------
+with tab4:
+    st.markdown("##### 🔍 전국 골프장 검색")
+    if not REAL:
+        st.info("실시간 검색을 하려면 왼쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하세요.")
+    else:
+        st.caption("전국 골프장을 이름으로 검색해서 실제 티타임을 볼 수 있어요. (예: 이글밸리, 남서울, 스카이72)")
+        sc1, sc2 = st.columns([2, 1], vertical_alignment="bottom")
+        with sc1:
+            kw = st.text_input("골프장 이름", placeholder="🔍 골프장 이름을 입력하세요 (2글자 이상)",
+                               key="ts_search_kw")
+        with sc2:
+            search_date = st.date_input("날짜", value=TODAY + dt.timedelta(days=1),
+                                        min_value=TODAY, format="YYYY-MM-DD", key="ts_search_date")
+
+        kw = (kw or "").strip()
+        if len(kw) < 2:
+            st.info("골프장 이름을 2글자 이상 입력하면 전국에서 검색해드려요.")
+        else:
+            try:
+                sdf = ts_search(kw, USER_TOKENS)
+                if not len(sdf):
+                    st.warning(f"'{kw}' 검색 결과가 없어요. 다른 이름으로 검색해보세요.")
+                else:
+                    st.caption(f"✅ '{kw}' 검색 결과 {len(sdf)}곳 — 골프장을 고르면 {search_date.isoformat()} 티타임이 나와요.")
+                    labels = [
+                        f"{r['course']}"
+                        + (f"  ·  {r['area']}" if r["area"] else "")
+                        + (f"  ⭐{r['score']}" if pd.notna(r["score"]) else "")
+                        for _, r in sdf.iterrows()
+                    ]
+                    idx = st.selectbox("검색된 골프장", range(len(labels)),
+                                       format_func=lambda i: labels[i], key="ts_search_pick")
+                    sel = sdf.iloc[idx]
+                    if sel.get("address"):
+                        st.caption(f"📍 {sel['address']}")
+                    try:
+                        sttdf = ts_tee_times(search_date.isoformat(), int(sel["seq"]), USER_TOKENS)
+                        sttdf = filter_tee_times(sttdf, only_am, only_night)
+                        if len(sttdf):
+                            st.caption(f"✅ {sel['course']} · {search_date.isoformat()} · 티타임 {len(sttdf)}개 (시간순)")
+                            st.markdown(tee_time_table_html(sttdf), unsafe_allow_html=True)
+                        else:
+                            st.info(f"{sel['course']}는 {search_date.isoformat()}에 (오전/야간 필터 포함) "
+                                    "예약 가능한 티타임이 없어요. 다른 날짜나 필터를 골라보세요.")
+                    except Exception as e:
+                        st.warning(f"티타임 불러오기 실패: {e}")
+            except Exception as e:
+                st.error(f"검색 실패: {e}\n\n토큰(x-refresh-token)이 만료됐을 수 있어요(약 6개월). "
+                         "크롬 F12 → Network에서 토큰을 새로 복사해 teescanner.py에 다시 넣어주세요.")
+
+st.divider()
+st.caption("⚠️ 실제 예약사이트 데이터를 쓰려면 각 사이트 약관·robots.txt를 확인하세요. 예약 버튼은 각 출처 플랫폼 사이트로 연결됩니다.")
