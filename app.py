@@ -319,6 +319,21 @@ def caddie_badge(raw: str) -> str:
     return f"<span class='tag-req' style='background:{color}'>{raw}</span>"
 
 
+CADDIE_FILTER_OPTS = ["캐디필수", "노캐디", "캐디선택가능"]
+
+
+def caddie_class(raw: str) -> str:
+    """티스캐너 캐디 원문 → 캐디필수 / 노캐디 / 캐디선택가능 중 하나(빈값은 '')."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if "노" in raw or raw.lower().startswith("no"):
+        return "노캐디"
+    if "선택" in raw:
+        return "캐디선택가능"
+    return "캐디필수"
+
+
 def caddie_req(caddie: str) -> tuple[str, str]:
     """캐디 옵션 → (라벨, 색)."""
     if caddie == "노캐디":
@@ -604,31 +619,29 @@ else:
                 except Exception as e:
                     st.error(f"로그인 실패: {e}")
 
-# ---------- 날짜 · 필터 (접이식, 모바일도 여기서) ----------
-with st.expander("📅 날짜 · 필터 설정 (여기를 눌러 열기)", expanded=False):
-    mode = st.radio("조회 방식", ["특정 날짜", "월간 검색"], horizontal=True, key="date_mode")
-    if mode == "특정 날짜":
-        picked = st.date_input("날짜", value=TODAY + dt.timedelta(days=1), min_value=TODAY,
-                               max_value=TODAY.replace(year=TODAY.year + 5), format="YYYY-MM-DD")
-        target_dates = [picked]
-        period_label = picked.isoformat()
+# ---------- 날짜·선택사항 값 읽기 ----------
+# 실제 위젯은 아래 탭1 '전국 최저가' 안의 설정 배너에 있음.
+# 스트림릿은 위→아래로 실행되어 히어로/KPI가 값을 먼저 알아야 해서 session_state에서 읽어옴.
+_mode = st.session_state.get("date_mode", "특정 날짜")
+if _mode == "특정 날짜":
+    _picked = st.session_state.get("scan_date", TODAY + dt.timedelta(days=1))
+    target_dates = [_picked]
+    period_label = _picked.isoformat()
+else:
+    _year = st.session_state.get("scan_year", TODAY.year)
+    _month_opt = st.session_state.get("scan_month", "전체")
+    if _month_opt == "전체":
+        target_dates = [d for m in range(1, 13) for d in month_dates(_year, m)]
+        period_label = f"{_year}년 전체"
     else:
-        years = list(range(TODAY.year, TODAY.year + 5))
-        ycol, mcol = st.columns(2)
-        year = ycol.selectbox("연도", years, format_func=lambda y: f"{y}년")
-        month_opt = mcol.selectbox("월", ["전체"] + [f"{m}월" for m in range(1, 13)])
-        if month_opt == "전체":
-            target_dates = [d for m in range(1, 13) for d in month_dates(year, m)]
-            period_label = f"{year}년 전체"
-        else:
-            target_dates = month_dates(year, int(month_opt.replace("월", "")))
-            period_label = f"{year}년 {month_opt}"
-    date_capped = len(target_dates) > MAX_DATES
-    if date_capped:
-        target_dates = target_dates[:MAX_DATES]
-    oc1, oc2 = st.columns(2)
-    only_am = oc1.checkbox("오전 티타임만 (12시 이전)", value=False)
-    only_night = oc2.checkbox("야간 티타임만 (17시 이후)", value=False)
+        target_dates = month_dates(_year, int(_month_opt.replace("월", "")))
+        period_label = f"{_year}년 {_month_opt}"
+date_capped = len(target_dates) > MAX_DATES
+if date_capped:
+    target_dates = target_dates[:MAX_DATES]
+only_am = st.session_state.get("only_am", False)
+only_night = st.session_state.get("only_night", False)
+caddie_sel = st.session_state.get("caddie_sel", CADDIE_FILTER_OPTS) or CADDIE_FILTER_OPTS
 
 # 지도·날씨 탭용 샘플(지역·캐디 필터는 전체 기본)
 df = load_data(USE_SAMPLE, tuple(d.isoformat() for d in target_dates))
@@ -737,7 +750,8 @@ elif USE_REAL:
     st.markdown(f"<div class='kpi-grid'>{cards}</div>", unsafe_allow_html=True)
 elif REAL:
     st.info(f"📅 **{real_date}** 은 예약 가능한 데이터가 없어요. "
-            "위쪽 **📅 날짜·필터 설정**에서 **내일 이후 날짜**를 골라주세요. (당일 예약은 거의 없어요)")
+            "아래 **📋 티타임 목록** 탭의 **📅 날짜·선택사항 설정**에서 "
+            "**내일 이후 날짜**를 골라주세요. (당일 예약은 거의 없어요)")
 else:
     st.info("🔒 위쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하면 "
             "전국 실시간 티타임·최저가가 나와요.")
@@ -754,17 +768,35 @@ with tab1:
         cat_df0 = ts_catalog()
         n_catalog = len(cat_df0)
 
-        sb1, sb2 = st.columns([1.5, 3], vertical_alignment="center")
-        with sb1:
-            scan_clicked = st.button(f"⚡ {real_date} 전국 최저가 스캔",
-                                     type="primary", key="scan_btn", disabled=(n_catalog == 0))
-        with sb2:
-            if USE_SCAN:
-                st.caption(f"✅ 스캔 완료 · {len(scan_df):,}곳 예약가능 · 버튼을 누르면 최신가로 갱신돼요")
-            elif n_catalog:
-                st.caption(f"전국 {n_catalog:,}곳을 훑어 실제 최저가를 계산해요 (약 1~2분 · 날짜별 1회 저장)")
+        # ---- 날짜 · 선택사항 · 스캔 버튼 (여기서 고르고 맨 아래 버튼으로 검색) ----
+        with st.expander("📅 날짜 · 선택사항 설정 (여기를 눌러 열기)", expanded=not USE_SCAN):
+            smode = st.radio("조회 방식", ["특정 날짜", "월간 검색"],
+                             horizontal=True, key="date_mode")
+            if smode == "특정 날짜":
+                st.date_input("날짜", value=TODAY + dt.timedelta(days=1), min_value=TODAY,
+                              max_value=TODAY.replace(year=TODAY.year + 5),
+                              format="YYYY-MM-DD", key="scan_date")
             else:
-                st.caption("먼저 '🌏 전국 전체 골프장'에서 목록을 만들어 주세요")
+                years = list(range(TODAY.year, TODAY.year + 5))
+                ycol, mcol = st.columns(2)
+                ycol.selectbox("연도", years, format_func=lambda y: f"{y}년", key="scan_year")
+                mcol.selectbox("월", ["전체"] + [f"{m}월" for m in range(1, 13)], key="scan_month")
+            oc1, oc2 = st.columns(2)
+            oc1.checkbox("오전 티타임만 (12시 이전)", value=False, key="only_am")
+            oc2.checkbox("야간 티타임만 (17시 이후)", value=False, key="only_night")
+            st.multiselect("캐디 선택", CADDIE_FILTER_OPTS, default=CADDIE_FILTER_OPTS,
+                           key="caddie_sel",
+                           help="캐디필수 · 노캐디 · 캐디선택가능 중 보고 싶은 것만 남기세요")
+            st.caption("👇 아래 버튼을 누르면 위 설정으로 전국 최저가를 검색해요")
+            scan_clicked = st.button(f"⚡ {real_date} 전국 최저가 스캔",
+                                     type="primary", key="scan_btn",
+                                     disabled=(n_catalog == 0), width="stretch")
+        if USE_SCAN:
+            st.caption(f"✅ 스캔 완료 · {len(scan_df):,}곳 예약가능 · 버튼을 누르면 최신가로 갱신돼요")
+        elif n_catalog:
+            st.caption(f"전국 {n_catalog:,}곳을 훑어 실제 최저가를 계산해요 (약 1~2분 · 날짜별 1회 저장)")
+        else:
+            st.caption("먼저 '🌏 전국 전체 골프장'에서 목록을 만들어 주세요")
 
         if scan_clicked and n_catalog:
             bar = st.progress(0.0, text="전국 최저가 스캔 중...")
@@ -794,6 +826,9 @@ with tab1:
                 sv = sv[sv["region"] == sreg]
             if squery:
                 sv = sv[sv["course"].str.contains(squery.strip(), case=False, na=False)]
+            caddie_pick = st.session_state.get("caddie_sel", CADDIE_FILTER_OPTS) or CADDIE_FILTER_OPTS
+            if len(caddie_pick) < len(CADDIE_FILTER_OPTS):
+                sv = sv[sv["caddie"].map(caddie_class).isin(caddie_pick)]
             sv = sv.sort_values("min_cost", ascending=(ssort == "가격 낮은순")).reset_index(drop=True)
 
             if not len(sv):
@@ -871,7 +906,7 @@ with tab1:
             st.markdown(table, unsafe_allow_html=True)
         else:
             st.info(f"📅 **{real_date}** 은 예약 가능한 특가가 없어요(당일은 거의 없어요). "
-                    "위쪽 **📅 날짜·필터 설정**에서 **내일 이후 날짜**를 골라보세요. 특정 골프장을 찾으려면 "
+                    "위 **📅 날짜·선택사항 설정**에서 **내일 이후 날짜**를 골라보세요. 특정 골프장을 찾으려면 "
                     "'🌏 전국 전체 골프장' 또는 '🔍 골프장 검색' 탭을 이용하세요.")
 
         # 스캔 직후에는 상세로 튀지 않게 최저가 표 상단으로 화면 고정
