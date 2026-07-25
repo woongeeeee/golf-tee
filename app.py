@@ -308,6 +308,27 @@ iframe[title="st_keyup.st_keyup"] { height: 40px !important; display:block; marg
     .logo-scan span { font-size:26px; }
     h1, h2, h3 { word-break:keep-all; }
 }
+
+/* ---------- 모바일: 사이드바(배너) 여닫기 버튼 확실히 보이게 ---------- */
+@media (max-width: 899px) {
+    header[data-testid="stHeader"] { background: rgba(244,250,241,0.95) !important;
+        visibility: visible !important; height: 3.2rem !important; }
+    header[data-testid="stHeader"] * { visibility: visible !important; }
+    [data-testid="stToolbar"], [data-testid="stAppDeployButton"], .stDeployButton { display: none !important; }
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"],
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stExpandSidebarButton"],
+    [data-testid="stBaseButton-headerNoPadding"],
+    button[kind="header"] {
+        display: inline-flex !important; visibility: visible !important; opacity: 1 !important;
+        color: #16A34A !important; background: #ffffff !important; border-radius: 8px !important;
+        box-shadow: 0 2px 6px rgba(0,0,0,.15) !important; }
+    [data-testid="stSidebarCollapsedControl"] svg,
+    [data-testid="collapsedControl"] svg,
+    button[kind="header"] svg { color: #16A34A !important; fill: #16A34A !important; }
+    section[data-testid="stSidebar"] { visibility: visible !important; }
+}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
