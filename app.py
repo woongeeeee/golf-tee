@@ -96,26 +96,14 @@ html, body, [class*="css"], .stApp, button, input, select, textarea {
 }
 .block-container { padding-top: 1.3rem; padding-bottom: 3rem; max-width: 1460px; }
 #MainMenu, footer { visibility: hidden; height:0; }
-/* 헤더는 투명하게만(숨기면 사이드바 다시 열기 버튼까지 사라짐) */
 header[data-testid="stHeader"] { background: transparent; }
 /* 오른쪽 위 Deploy 버튼/툴바 숨김 (스트림릿 기본 요소) */
 [data-testid="stToolbar"], [data-testid="stAppDeployButton"], .stDeployButton { display: none !important; }
-/* 데스크톱(넓은 화면)에서만 사이드바 고정 + 접기 버튼 숨김.
-   모바일(좁은 화면)에서는 스트림릿 기본 동작(햄버거로 접었다 폈다)이 살아나게 둠 */
-@media (min-width: 900px) {
-    section[data-testid="stSidebar"] {
-        transform: none !important;
-        visibility: visible !important;
-        margin-left: 0 !important;
-        left: 0 !important;
-        width: 300px !important;
-        min-width: 300px !important;
-    }
-    section[data-testid="stSidebar"] > div { width: 300px !important; }
-    [data-testid="stSidebarCollapseButton"],
-    [data-testid="stSidebarCollapsedControl"],
-    [data-testid="collapsedControl"] { display: none !important; }
-}
+/* 사이드바 미사용 — 모든 기능을 메인 화면으로 옮겨서 사이드바는 숨김 */
+section[data-testid="stSidebar"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"] { display: none !important; }
 
 /* ---------- 히어로 (햇살 잔디 페어웨이) ---------- */
 .hero {
@@ -213,18 +201,7 @@ header[data-testid="stHeader"] { background: transparent; }
 .deal-row .pr { font-family:'Montserrat',sans-serif; font-size:20px; font-weight:800; color:#e0352b; }
 .tag-req { padding:3px 9px; border-radius:999px; font-size:11.5px; font-weight:800; color:#fff; }
 
-[data-testid="stSidebar"] { background:#f4faf1; border-right:1px solid #d8e8d1; }
-/* 사이드바 위쪽 빈 여백 최소화(로고를 위로 바짝 끌어올림) */
-section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-top: 0 !important; }
-section[data-testid="stSidebar"] > div:first-child { padding-top: 0 !important; margin-top: 0 !important; }
-section[data-testid="stSidebar"] .block-container { padding-top: 0 !important; }
-/* 데스크톱에서만 사이드바 헤더 접기(모바일은 여닫기 버튼이 여기 있어 남겨둠) */
-@media (min-width: 900px) {
-    section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] { padding-top: 0 !important;
-        padding-bottom: 0 !important; min-height: 0 !important; height: 0 !important; }
-}
-
-/* ---------- 사이드바 로고 (웅SCANNER) - 그래피티 · 다채색 · 임팩트 ---------- */
+/* ---------- 로고 (웅SCANNER) - 그래피티 · 다채색 · 임팩트 ---------- */
 .logo-wrap { position:relative; padding:0 2px 16px; margin-bottom:8px; border-bottom:1px solid #d8e8d1;
     text-align:center; }
 @keyframes ungpop {
@@ -309,26 +286,6 @@ iframe[title="st_keyup.st_keyup"] { height: 40px !important; display:block; marg
     h1, h2, h3 { word-break:keep-all; }
 }
 
-/* ---------- 모바일: 사이드바(배너) 여닫기 버튼 확실히 보이게 ---------- */
-@media (max-width: 899px) {
-    header[data-testid="stHeader"] { background: rgba(244,250,241,0.95) !important;
-        visibility: visible !important; height: 3.2rem !important; }
-    header[data-testid="stHeader"] * { visibility: visible !important; }
-    [data-testid="stToolbar"], [data-testid="stAppDeployButton"], .stDeployButton { display: none !important; }
-    [data-testid="stSidebarCollapsedControl"],
-    [data-testid="collapsedControl"],
-    [data-testid="stSidebarCollapseButton"],
-    [data-testid="stExpandSidebarButton"],
-    [data-testid="stBaseButton-headerNoPadding"],
-    button[kind="header"] {
-        display: inline-flex !important; visibility: visible !important; opacity: 1 !important;
-        color: #16A34A !important; background: #ffffff !important; border-radius: 8px !important;
-        box-shadow: 0 2px 6px rgba(0,0,0,.15) !important; }
-    [data-testid="stSidebarCollapsedControl"] svg,
-    [data-testid="collapsedControl"] svg,
-    button[kind="header"] svg { color: #16A34A !important; fill: #16A34A !important; }
-    section[data-testid="stSidebar"] { visibility: visible !important; }
-}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -605,47 +562,51 @@ def deal_popup_real(deals: pd.DataFrame, date: str, tokens=None):
 # 데이터 소스: 지도·날씨 탭은 좌표가 필요해 골프장 카탈로그(샘플) 사용. 티타임/가격은 티스캐너 실데이터.
 USE_SAMPLE = True
 
-# ============================ 사이드바 ============================
-with st.sidebar:
-    st.markdown("""
-    <div class="logo-wrap">
-      <div class="logo-ung">웅</div>
-      <div class="logo-scan">
-        <span class="c1">S</span><span class="c2">C</span><span class="c3">A</span><span class="c4">N</span><span class="c5">N</span><span class="c6">E</span><span class="c7">R</span>
-      </div>
-      <div class="logo-tag">⛳ 전국 골프장 티타임 통합검색</div>
-    </div>
-    """, unsafe_allow_html=True)
+# ============================ 상단: 로고 · 로그인 · 날짜/필터 (사이드바 없이) ============================
+st.markdown("""
+<div class="logo-wrap">
+  <div class="logo-ung">웅</div>
+  <div class="logo-scan">
+    <span class="c1">S</span><span class="c2">C</span><span class="c3">A</span><span class="c4">N</span><span class="c5">N</span><span class="c6">E</span><span class="c7">R</span>
+  </div>
+  <div class="logo-tag">⛳ 전국 골프장 티타임 통합검색</div>
+</div>
+""", unsafe_allow_html=True)
 
-    # ---------- 티스캐너 로그인 (각자 자기 계정) ----------
-    _logged_in = bool(st.session_state.get("user_tokens"))
-    with st.expander("👤 티스캐너 로그인", expanded=not _logged_in):
-        if _logged_in:
-            st.success(f"{st.session_state.get('user_name', '회원')}님 로그인됨")
-            if st.button("로그아웃", key="logout_btn", width="stretch"):
-                st.session_state.pop("user_tokens", None)
-                st.session_state.pop("user_name", None)
-                st.rerun()
-        else:
-            st.caption("본인 티스캐너 계정으로 로그인하면 실시간 데이터가 나와요.")
+# ---------- 티스캐너 로그인 (각자 자기 계정) ----------
+USER_TOKENS = st.session_state.get("user_tokens")
+if USER_TOKENS:
+    uc1, uc2 = st.columns([4, 1], vertical_alignment="center")
+    uc1.success(f"✅ {st.session_state.get('user_name', '회원')}님 로그인됨")
+    if uc2.button("로그아웃", key="logout_btn", width="stretch"):
+        st.session_state.pop("user_tokens", None)
+        st.session_state.pop("user_name", None)
+        st.rerun()
+else:
+    with st.container(border=True):
+        st.markdown("**👤 티스캐너 로그인** — 본인 아이디(전화번호)·비밀번호로 로그인하면 실시간 데이터가 나와요.")
+        li1, li2, li3 = st.columns([2, 2, 1], vertical_alignment="bottom")
+        with li1:
             lid = st.text_input("아이디(전화번호)", key="login_id", placeholder="01012345678")
+        with li2:
             lpw = st.text_input("비밀번호", type="password", key="login_pw")
-            if st.button("로그인", key="login_btn", type="primary", width="stretch"):
-                if not lid.strip() or not lpw:
-                    st.warning("아이디와 비밀번호를 모두 입력하세요.")
-                else:
-                    try:
-                        res = ts.login(lid.strip(), lpw)
-                        st.session_state.user_tokens = (res["x_token"], res["x_refresh_token"])
-                        st.session_state.user_name = res["name"]
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"로그인 실패: {e}")
+        with li3:
+            go = st.button("로그인", key="login_btn", type="primary", width="stretch")
+        if go:
+            if not lid.strip() or not lpw:
+                st.warning("아이디와 비밀번호를 모두 입력하세요.")
+            else:
+                try:
+                    res = ts.login(lid.strip(), lpw)
+                    st.session_state.user_tokens = (res["x_token"], res["x_refresh_token"])
+                    st.session_state.user_name = res["name"]
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"로그인 실패: {e}")
 
-    st.markdown("### ⛳ 검색 필터")
-
-    st.markdown("#### 📅 날짜 선택")
-    mode = st.radio("조회 방식", ["특정 날짜", "월간 검색"], horizontal=True, label_visibility="collapsed")
+# ---------- 날짜 · 필터 (접이식, 모바일도 여기서) ----------
+with st.expander("📅 날짜 · 필터 설정 (여기를 눌러 열기)", expanded=False):
+    mode = st.radio("조회 방식", ["특정 날짜", "월간 검색"], horizontal=True, key="date_mode")
     if mode == "특정 날짜":
         picked = st.date_input("날짜", value=TODAY + dt.timedelta(days=1), min_value=TODAY,
                                max_value=TODAY.replace(year=TODAY.year + 5), format="YYYY-MM-DD")
@@ -665,15 +626,14 @@ with st.sidebar:
     date_capped = len(target_dates) > MAX_DATES
     if date_capped:
         target_dates = target_dates[:MAX_DATES]
-    st.divider()
+    oc1, oc2 = st.columns(2)
+    only_am = oc1.checkbox("오전 티타임만 (12시 이전)", value=False)
+    only_night = oc2.checkbox("야간 티타임만 (17시 이후)", value=False)
 
-    df = load_data(USE_SAMPLE, tuple(d.isoformat() for d in target_dates))
-    regions = ["전체"] + (sorted(df["region"].unique().tolist()) if len(df) else [])
-    region = st.selectbox("지역", regions)
-    st.markdown("**선택 옵션**")
-    caddie_opt = [opt for opt in CADDIE_OPTIONS if st.checkbox(opt, value=True, key=f"cad_{opt}")]
-    only_am = st.checkbox("오전 티타임만 (12시 이전)", value=False)
-    only_night = st.checkbox("야간 티타임만 (17시 이후)", value=False)
+# 지도·날씨 탭용 샘플(지역·캐디 필터는 전체 기본)
+df = load_data(USE_SAMPLE, tuple(d.isoformat() for d in target_dates))
+region = "전체"
+caddie_opt = CADDIE_OPTIONS
 
 # ============================ 필터 적용 ============================
 f = df.copy()
@@ -716,7 +676,7 @@ elif USE_REAL:
 elif REAL:
     chip = f"📅 {real_date} · 이 날짜는 예약 데이터가 없어요 · <b>내일 이후 날짜를 선택하세요</b>"
 else:
-    chip = "🔒 왼쪽 <b>👤 티스캐너 로그인</b>에서 로그인하면 실시간 데이터가 나와요"
+    chip = "🔒 위쪽 <b>👤 티스캐너 로그인</b>에서 로그인하면 실시간 데이터가 나와요"
 st.markdown(f"""
 <div class="hero">
   <div class="flag">⛳</div>
@@ -726,29 +686,6 @@ st.markdown(f"""
   <span class="chip">{chip}</span>
 </div>
 """, unsafe_allow_html=True)
-
-# ============================ 메인 화면 로그인 (모바일에서도 바로 되게) ============================
-if not REAL:
-    st.markdown("#### 👤 티스캐너 로그인")
-    st.caption("본인 티스캐너 아이디(전화번호)와 비밀번호로 로그인하면 전국 실시간 티타임·최저가가 나와요.")
-    lc1, lc2, lc3 = st.columns([2, 2, 1], vertical_alignment="bottom")
-    with lc1:
-        lid_m = st.text_input("아이디(전화번호)", key="login_id_main", placeholder="01012345678")
-    with lc2:
-        lpw_m = st.text_input("비밀번호", type="password", key="login_pw_main")
-    with lc3:
-        go_login = st.button("로그인", key="login_btn_main", type="primary", width="stretch")
-    if go_login:
-        if not lid_m.strip() or not lpw_m:
-            st.warning("아이디와 비밀번호를 모두 입력하세요.")
-        else:
-            try:
-                res = ts.login(lid_m.strip(), lpw_m)
-                st.session_state.user_tokens = (res["x_token"], res["x_refresh_token"])
-                st.session_state.user_name = res["name"]
-                st.rerun()
-            except Exception as e:
-                st.error(f"로그인 실패: {e}")
 
 # ============================ 특가 팝업 (접속 시 1회 + 다시 보기 버튼) ============================
 if USE_SCAN:
@@ -800,9 +737,9 @@ elif USE_REAL:
     st.markdown(f"<div class='kpi-grid'>{cards}</div>", unsafe_allow_html=True)
 elif REAL:
     st.info(f"📅 **{real_date}** 은 예약 가능한 데이터가 없어요. "
-            "왼쪽에서 **내일 이후 날짜**를 골라주세요. (당일 예약은 거의 없어요)")
+            "위쪽 **📅 날짜·필터 설정**에서 **내일 이후 날짜**를 골라주세요. (당일 예약은 거의 없어요)")
 else:
-    st.info("🔒 왼쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하면 "
+    st.info("🔒 위쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하면 "
             "전국 실시간 티타임·최저가가 나와요.")
 
 tab1, tab2, tab3, tab4 = st.tabs(["📋 티타임 목록", "🗺️ 지도 & 차트", "☀️ 날씨 예보", "🔍 골프장 검색"])
@@ -934,7 +871,7 @@ with tab1:
             st.markdown(table, unsafe_allow_html=True)
         else:
             st.info(f"📅 **{real_date}** 은 예약 가능한 특가가 없어요(당일은 거의 없어요). "
-                    "왼쪽에서 **내일 이후 날짜**를 골라보세요. 특정 골프장을 찾으려면 "
+                    "위쪽 **📅 날짜·필터 설정**에서 **내일 이후 날짜**를 골라보세요. 특정 골프장을 찾으려면 "
                     "'🌏 전국 전체 골프장' 또는 '🔍 골프장 검색' 탭을 이용하세요.")
 
         # 스캔 직후에는 상세로 튀지 않게 최저가 표 상단으로 화면 고정
@@ -996,7 +933,7 @@ with tab1:
                         st.markdown(tee_time_table_html(cttdf), unsafe_allow_html=True)
                     else:
                         st.info(f"{sel['course']}는 {real_date}에 (오전/야간 필터 포함) 예약 가능한 티타임이 없어요. "
-                                "왼쪽 날짜나 필터를 바꿔보세요.")
+                                "위쪽 날짜나 필터를 바꿔보세요.")
                 except Exception as e:
                     st.warning(f"티타임 불러오기 실패: {e}")
             st.divider()
@@ -1013,7 +950,7 @@ with tab1:
                 st.rerun()
 
     else:
-        st.info("🔒 왼쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하면 "
+        st.info("🔒 위쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하면 "
                 "여기에 전국 실시간 티타임·최저가가 나와요.")
 
 # ---------------- 탭 2: 지도 & 차트 ----------------
@@ -1107,7 +1044,7 @@ with tab3:
 with tab4:
     st.markdown("##### 🔍 전국 골프장 검색")
     if not REAL:
-        st.info("실시간 검색을 하려면 왼쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하세요.")
+        st.info("실시간 검색을 하려면 위쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하세요.")
     else:
         st.caption("전국 골프장을 이름으로 검색해서 실제 티타임을 볼 수 있어요. (예: 이글밸리, 남서울, 스카이72)")
         sc1, sc2 = st.columns([2, 1], vertical_alignment="bottom")
