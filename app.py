@@ -623,7 +623,7 @@ with st.sidebar:
     st.markdown("#### 📅 날짜 선택")
     mode = st.radio("조회 방식", ["특정 날짜", "월간 검색"], horizontal=True, label_visibility="collapsed")
     if mode == "특정 날짜":
-        picked = st.date_input("날짜", value=TODAY, min_value=TODAY,
+        picked = st.date_input("날짜", value=TODAY + dt.timedelta(days=1), min_value=TODAY,
                                max_value=TODAY.replace(year=TODAY.year + 5), format="YYYY-MM-DD")
         target_dates = [picked]
         period_label = picked.isoformat()
@@ -689,8 +689,10 @@ if USE_SCAN:
 elif USE_REAL:
     chip = (f"📅 {real_date} · 전국 · 골프장 {real_all['seq'].nunique():,}곳 · "
             f"<b>🔴 티스캐너 추천 특가</b>")
+elif REAL:
+    chip = f"📅 {real_date} · 이 날짜는 예약 데이터가 없어요 · <b>내일 이후 날짜를 선택하세요</b>"
 else:
-    chip = f"📅 {period_label} · {region} · 티타임 {len(f):,}건 · 샘플 데이터"
+    chip = "🔒 왼쪽 <b>👤 티스캐너 로그인</b>에서 로그인하면 실시간 데이터가 나와요"
 st.markdown(f"""
 <div class="hero">
   <div class="flag">⛳</div>
@@ -700,10 +702,6 @@ st.markdown(f"""
   <span class="chip">{chip}</span>
 </div>
 """, unsafe_allow_html=True)
-
-if REAL and not USE_REAL:
-    st.warning(f"⚠️ 티스캐너 실시간 특가를 불러오지 못해 **샘플 데이터**로 표시 중이에요.\n\n"
-               f"사유: {real_err}")
 
 # ============================ 특가 팝업 (접속 시 1회 + 다시 보기 버튼) ============================
 if USE_SCAN:
@@ -715,22 +713,20 @@ elif USE_REAL:
                  .sort_values("min_cost").head(10).reset_index(drop=True))
     reopen_label = "🔥 전국 실시간 특가 다시 보기"
 else:
-    pop_deals = load_month_deals(USE_SAMPLE)
-    reopen_label = "🔥 이 달의 특가 다시 보기"
+    pop_deals = pd.DataFrame()
+    reopen_label = ""
 
-rbc1, rbc2 = st.columns([1.8, 3])
-with rbc1:
-    if st.button(reopen_label, type="primary", key="reopen_deals"):
-        st.session_state.show_popup_now = True
+if len(pop_deals):
+    rbc1, rbc2 = st.columns([1.8, 3])
+    with rbc1:
+        if st.button(reopen_label, type="primary", key="reopen_deals"):
+            st.session_state.show_popup_now = True
 
 first_load = not st.session_state.get("popup_seen", False)
 if len(pop_deals) and ((first_load and not dismissed_today()) or st.session_state.get("show_popup_now", False)):
     st.session_state.popup_seen = True
     st.session_state.show_popup_now = False
-    if USE_SCAN or USE_REAL:
-        deal_popup_real(pop_deals, real_date, USER_TOKENS)
-    else:
-        deal_popup(pop_deals)
+    deal_popup_real(pop_deals, real_date, USER_TOKENS)
 
 if date_capped:
     st.caption(f"⚡ 성능 보호를 위해 선택 기간 중 앞 {MAX_DATES}일만 불러왔습니다.")
@@ -755,16 +751,12 @@ elif USE_REAL:
         + kpi("🔥", "추천 특가", f"{len(real_all)}곳")
     )
     st.markdown(f"<div class='kpi-grid'>{cards}</div>", unsafe_allow_html=True)
-elif len(f):
-    cards = (
-        kpi("🏷️", "최저 그린피", f"{f['green_fee'].min():,}원", hl=True)
-        + kpi("📊", "평균 그린피", f"{int(f['green_fee'].mean()):,}원")
-        + kpi("📍", "골프장 수", f"{f['course'].nunique()}곳")
-        + kpi("⛳", "티타임 수", f"{len(f):,}건")
-    )
-    st.markdown(f"<div class='kpi-grid'>{cards}</div>", unsafe_allow_html=True)
+elif REAL:
+    st.info(f"📅 **{real_date}** 은 예약 가능한 데이터가 없어요. "
+            "왼쪽에서 **내일 이후 날짜**를 골라주세요. (당일 예약은 거의 없어요)")
 else:
-    st.warning("조건에 맞는 티타임이 없습니다. 날짜 또는 필터를 바꿔보세요.")
+    st.info("🔒 왼쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하면 "
+            "전국 실시간 티타임·최저가가 나와요.")
 
 tab1, tab2, tab3, tab4 = st.tabs(["📋 티타임 목록", "🗺️ 지도 & 차트", "☀️ 날씨 예보", "🔍 골프장 검색"])
 
@@ -894,8 +886,9 @@ with tab1:
             )
             st.markdown(table, unsafe_allow_html=True)
         else:
-            st.warning(f"이 날짜의 실시간 데이터를 불러오지 못했어요. 사유: {real_err or '데이터 없음'}. "
-                       "전국 목록이 있으면 위 스캔 버튼으로 최저가를 만들 수 있어요.")
+            st.info(f"📅 **{real_date}** 은 예약 가능한 특가가 없어요(당일은 거의 없어요). "
+                    "왼쪽에서 **내일 이후 날짜**를 골라보세요. 특정 골프장을 찾으려면 "
+                    "'🌏 전국 전체 골프장' 또는 '🔍 골프장 검색' 탭을 이용하세요.")
 
         # 스캔 직후에는 상세로 튀지 않게 최저가 표 상단으로 화면 고정
         if st.session_state.pop("scan_just_done", False):
@@ -972,64 +965,9 @@ with tab1:
                 st.success(f"{len(clubs)}곳으로 갱신 완료!")
                 st.rerun()
 
-    elif len(f):
-        st.markdown("##### 📋 티타임 목록")
-        hcol2, hcol3 = st.columns([3, 1.3], vertical_alignment="bottom")
-        with hcol2:
-            query = st_keyup("검색", placeholder="🔍 골프장 검색 (예: 이글밸리, CC)",
-                             debounce=200, label_visibility="collapsed", key="course_search")
-        with hcol3:
-            sort_opt = st.selectbox("정렬", ["가격 낮은순", "가격 높은순", "빠른 시간순", "늦은 시간순"],
-                                    label_visibility="collapsed")
-
-        fv = f
-        if query:
-            fv = fv[fv["course"].str.contains(query.strip(), case=False, na=False)]
-
-        if sort_opt == "가격 낮은순":
-            fs = fv.sort_values(["green_fee", "date", "tee_time"])
-        elif sort_opt == "가격 높은순":
-            fs = fv.sort_values(["green_fee", "date", "tee_time"], ascending=[False, True, True])
-        elif sort_opt == "빠른 시간순":
-            fs = fv.sort_values(["tee_time", "date", "green_fee"])
-        else:  # 늦은 시간순
-            fs = fv.sort_values(["tee_time", "date"], ascending=[False, True])
-        fs = fs.reset_index(drop=True)
-
-        if len(fs) == 0:
-            st.info(f"'{query}' 검색 결과가 없어요. 다른 이름으로 검색해보세요.")
-        else:
-            LIMIT = 250
-            view = fs.head(LIMIT)
-            best_price = fs["green_fee"].min()
-            rows_html = []
-            for i, r in view.iterrows():
-                is_best = r["green_fee"] == best_price
-                tr_cls = " class='best'" if is_best else ""
-                badge = f"<span class='badge' style='background:{CADDIE_COLORS.get(r['caddie'], '#666')}'>{r['caddie']}</span>"
-                gf = (f"<span class='deal-price'>{r['green_fee']:,}원</span>"
-                      if r["green_fee"] <= DEAL_LIMIT_PRICE else f"{r['green_fee']:,}원")
-                best_tag = "<span class='best-badge'>최저가</span>" if is_best else ""
-                rows_html.append(
-                    f"<tr{tr_cls}><td class='rank'>{i + 1}</td>"
-                    f"<td class='course'>{r['course']}{best_tag}</td><td>{r['city']}</td>"
-                    f"<td>{holes_label(int(r['holes']))}</td>"
-                    f"<td class='dt'>{r['date'][5:]} {r['tee_time']}</td><td class='money'>{gf}</td>"
-                    f"<td class='cad'>{badge}</td><td class='money'>{r['cart_fee']:,}원</td>"
-                    f"<td><span class='src-pill'>{r['source']}</span></td>"
-                    f"<td><a class='book-btn' href='{r['booking_url']}' target='_blank' rel='noopener'>예약</a></td></tr>"
-                )
-            table = (
-                "<div class='table-wrap'><table class='golf-table'><thead><tr>"
-                "<th>#</th><th>골프장</th><th>지역</th><th>홀</th><th>날짜·티타임</th><th>그린피</th><th>캐디</th>"
-                "<th>카트비</th><th>출처</th><th>예약</th>"
-                "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table></div>"
-            )
-            st.markdown(table, unsafe_allow_html=True)
-            cap = f"💡 {sort_opt} 정렬 · 빨간 그린피는 7만원 이하 특가"
-            if len(fs) > LIMIT:
-                cap += f" · 전체 {len(fs):,}건 중 상위 {LIMIT}건 표시"
-            st.caption(cap)
+    else:
+        st.info("🔒 왼쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하면 "
+                "여기에 전국 실시간 티타임·최저가가 나와요.")
 
 # ---------------- 탭 2: 지도 & 차트 ----------------
 with tab2:
