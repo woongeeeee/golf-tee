@@ -218,8 +218,11 @@ header[data-testid="stHeader"] { background: transparent; }
 section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-top: 0 !important; }
 section[data-testid="stSidebar"] > div:first-child { padding-top: 0 !important; margin-top: 0 !important; }
 section[data-testid="stSidebar"] .block-container { padding-top: 0 !important; }
-section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] { padding-top: 0 !important;
-    padding-bottom: 0 !important; min-height: 0 !important; height: 0 !important; }
+/* 데스크톱에서만 사이드바 헤더 접기(모바일은 여닫기 버튼이 여기 있어 남겨둠) */
+@media (min-width: 900px) {
+    section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] { padding-top: 0 !important;
+        padding-bottom: 0 !important; min-height: 0 !important; height: 0 !important; }
+}
 
 /* ---------- 사이드바 로고 (웅SCANNER) - 그래피티 · 다채색 · 임팩트 ---------- */
 .logo-wrap { position:relative; padding:0 2px 16px; margin-bottom:8px; border-bottom:1px solid #d8e8d1;
@@ -702,6 +705,29 @@ st.markdown(f"""
   <span class="chip">{chip}</span>
 </div>
 """, unsafe_allow_html=True)
+
+# ============================ 메인 화면 로그인 (모바일에서도 바로 되게) ============================
+if not REAL:
+    st.markdown("#### 👤 티스캐너 로그인")
+    st.caption("본인 티스캐너 아이디(전화번호)와 비밀번호로 로그인하면 전국 실시간 티타임·최저가가 나와요.")
+    lc1, lc2, lc3 = st.columns([2, 2, 1], vertical_alignment="bottom")
+    with lc1:
+        lid_m = st.text_input("아이디(전화번호)", key="login_id_main", placeholder="01012345678")
+    with lc2:
+        lpw_m = st.text_input("비밀번호", type="password", key="login_pw_main")
+    with lc3:
+        go_login = st.button("로그인", key="login_btn_main", type="primary", width="stretch")
+    if go_login:
+        if not lid_m.strip() or not lpw_m:
+            st.warning("아이디와 비밀번호를 모두 입력하세요.")
+        else:
+            try:
+                res = ts.login(lid_m.strip(), lpw_m)
+                st.session_state.user_tokens = (res["x_token"], res["x_refresh_token"])
+                st.session_state.user_name = res["name"]
+                st.rerun()
+            except Exception as e:
+                st.error(f"로그인 실패: {e}")
 
 # ============================ 특가 팝업 (접속 시 1회 + 다시 보기 버튼) ============================
 if USE_SCAN:
