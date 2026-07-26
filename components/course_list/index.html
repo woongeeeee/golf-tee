@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<style>
+  @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+  html, body { margin:0; padding:0; background:transparent;
+    font-family:'Pretendard',-apple-system,BlinkMacSystemFont,sans-serif; color:#17301F; }
+  .cc-list { max-height:360px; overflow-y:auto; border:1px solid #dcebd5; border-radius:14px;
+    background:#fff; padding:5px; box-shadow:0 10px 24px -18px rgba(40,120,60,.5); }
+  .cc-item { padding:11px 13px; border-bottom:1px solid #eef3ea; cursor:pointer; border-radius:10px;
+    transition:background .12s; }
+  .cc-item:last-child { border-bottom:none; }
+  .cc-item:hover { background:#f3fbef; }
+  .cc-item.sel { background:linear-gradient(90deg, rgba(22,163,74,.16), rgba(22,163,74,.03) 70%);
+    box-shadow: inset 3px 0 0 #16A34A; }
+  .cc-name { font-weight:800; color:#123021; font-size:14px; }
+  .cc-sub { color:#7a8f80; font-weight:600; font-size:12px; margin-top:2px; }
+  .cc-empty { padding:22px; text-align:center; color:#7a8f80; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  const R = document.getElementById('root');
+  function post(msg){ window.parent.postMessage(Object.assign({isStreamlitMessage:true}, msg), "*"); }
+  function ready(){ post({type:"streamlit:componentReady", apiVersion:1}); }
+  function setH(h){ post({type:"streamlit:setFrameHeight", height:h}); }
+  function setVal(v){ post({type:"streamlit:setComponentValue", value:v, dataType:"json"}); }
+  function esc(s){ return (s==null?"":String(s)).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+  function render(items, selected){
+    if(!items || !items.length){
+      R.innerHTML = "<div class='cc-list'><div class='cc-empty'>검색 결과가 없어요</div></div>";
+      setH(80); return;
+    }
+    let h = "<div class='cc-list'>";
+    items.forEach(it=>{
+      const isSel = (String(it.course)===String(selected));
+      h += "<div class='cc-item"+(isSel?" sel":"")+"' data-course='"+encodeURIComponent(it.course)+"'>"
+        + "<div class='cc-name'>"+esc(it.course)+"</div>"
+        + (it.sub ? "<div class='cc-sub'>"+esc(it.sub)+"</div>" : "")
+        + "</div>";
+    });
+    h += "</div>";
+    R.innerHTML = h;
+    R.querySelectorAll(".cc-item").forEach(el=>{
+      el.addEventListener("click", ()=>{
+        setVal(decodeURIComponent(el.getAttribute("data-course")));
+      });
+    });
+    // 리스트 높이(항목 수에 맞춰, 최대 372px)
+    setH(Math.min(372, 14 + items.length*54));
+  }
+
+  window.addEventListener("message", (e)=>{
+    if(e.data && e.data.type==="streamlit:render"){
+      const a = e.data.args || {};
+      render(a.items || [], a.selected);
+    }
+  });
+  ready();
+</script>
+</body>
+</html>

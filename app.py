@@ -40,6 +40,10 @@ _scan_table = components.declare_component(
 _auth_store = components.declare_component(
     "auth_store", path=str(Path(__file__).parent / "components" / "auth_store"))
 
+# 클릭 가능한 골프장 목록(지도·날씨 탭 공용) — 항목 클릭 시 골프장 이름을 반환
+_course_list = components.declare_component(
+    "course_list", path=str(Path(__file__).parent / "components" / "course_list"))
+
 
 def _secret(k: str):
     """secrets.toml 이 없어도 안전하게 읽기(없으면 None)."""
@@ -59,12 +63,21 @@ def naver_directions(course: str) -> str:
     return f"https://map.naver.com/p/search/{quote(course)}"
 
 
-def folium_map(mapdf: pd.DataFrame) -> folium.Map:
-    """OpenStreetMap(무료·키 불필요) + 골프장 마커 지도. 마커 클릭 시 길찾기 버튼."""
-    center = [float(mapdf["lat"].mean()), float(mapdf["lon"].mean())]
-    m = folium.Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
+def folium_map(mapdf: pd.DataFrame, focus: str | None = None) -> folium.Map:
+    """OpenStreetMap(무료·키 불필요) + 골프장 마커 지도. 마커 클릭 시 길찾기 버튼.
+    focus(골프장 이름)가 주어지면 그 골프장으로 지도를 확대·중심 이동하고 마커를 강조."""
+    frow = None
+    if focus is not None and (mapdf["course"] == focus).any():
+        frow = mapdf[mapdf["course"] == focus].iloc[0]
+        center = [float(frow["lat"]), float(frow["lon"])]
+        zoom = 13
+    else:
+        center = [float(mapdf["lat"].mean()), float(mapdf["lon"].mean())]
+        zoom = 13 if len(mapdf) == 1 else 7
+    m = folium.Map(location=center, zoom_start=zoom, tiles="OpenStreetMap", control_scale=True)
     for _, r in mapdf.iterrows():
         loc = r["city"] if "city" in r and pd.notna(r["city"]) else r.get("region", "")
+        is_focus = frow is not None and r["course"] == focus
         popup_html = (
             f"<div style='font-family:sans-serif;text-align:center;min-width:150px'>"
             f"<div style='font-weight:800;font-size:14px;margin-bottom:2px'>{r['course']}</div>"
@@ -76,10 +89,13 @@ def folium_map(mapdf: pd.DataFrame) -> folium.Map:
         )
         folium.CircleMarker(
             location=[float(r["lat"]), float(r["lon"])],
-            radius=6, weight=1, color="#991B1B",
-            fill=True, fill_color="#EF4444", fill_opacity=0.9,
+            radius=11 if is_focus else 6, weight=2 if is_focus else 1,
+            color="#166534" if is_focus else "#991B1B",
+            fill=True, fill_color="#16A34A" if is_focus else "#EF4444",
+            fill_opacity=0.95 if is_focus else 0.9,
             tooltip=f"{r['course']}",
-            popup=folium.Popup(popup_html, max_width=240),
+            popup=folium.Popup(popup_html, max_width=240,
+                               show=bool(is_focus)),
         ).add_to(m)
     return m
 
@@ -807,7 +823,7 @@ else:
     st.info("🔒 위쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하면 "
             "전국 실시간 티타임·최저가가 나와요.")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📋 티타임 목록", "🗺️ 지도 & 차트", "☀️ 날씨 예보", "🔍 골프장 검색"])
+tab1, tab2, tab3, tab4 = st.tabs(["📋 티타임 목록", "📍 골프장 위치검색", "☀️ 날씨 예보", "🔍 골프장 검색"])
 
 # ---------------- 탭 1: 목록 ----------------
 with tab1:
@@ -1043,53 +1059,94 @@ with tab1:
         st.info("🔒 위쪽 **👤 티스캐너 로그인**에서 본인 계정으로 로그인하면 "
                 "여기에 전국 실시간 티타임·최저가가 나와요.")
 
-# ---------------- 탭 2: 지도 & 차트 ----------------
+# ---------------- 탭 2: 골프장 위치검색 ----------------
 with tab2:
     if len(f):
         courses_df = (f.dropna(subset=["lat", "lon"]).drop_duplicates("course")
                       .sort_values("course")[["course", "region", "city", "holes", "gubun", "lat", "lon"]])
         left, right = st.columns([1.35, 1])
         with right:
-            st.markdown("##### 🔎 골프장(CC) 검색")
-            map_query = st_keyup("CC검색", placeholder="🔍 골프장 이름 검색 (실시간)",
-                                 debounce=200, label_visibility="collapsed", key="map_search")
+            st.markdown("##### 🔎 골프장 검색")
+            map_query = st_keyup("CC검색", placeholder="🔍 골프장 이름 검색 (한 글자씩 실시간)",
+                                 debounce=150, label_visibility="collapsed", key="map_search")
             listed = courses_df
             if map_query:
                 listed = listed[listed["course"].str.contains(map_query.strip(), case=False, na=False)]
-            items = "".join(
-                f"<div class='cc-item'>{r['course']}"
-                f"<span class='cc-sub'> · {r['city']} · {r['holes']}홀 · {r['gubun']}</span></div>"
+            m_items = [
+                {"course": r["course"], "sub": f"{r['city']} · {r['holes']}홀 · {r['gubun']}"}
                 for _, r in listed.iterrows()
-            )
-            st.markdown(f"<div class='cc-list'>{items or '<div class=cc-empty>검색 결과가 없어요</div>'}</div>",
-                        unsafe_allow_html=True)
-            st.caption(f"총 {len(listed):,}곳 · 검색하면 왼쪽 지도에 해당 골프장만 표시돼요")
+            ]
+            map_sel = st.session_state.get("map_course")
+            if map_sel and not (listed["course"] == map_sel).any():
+                map_sel = None
+            clicked_map = _course_list(items=m_items, selected=map_sel, key="map_list", default=None)
+            if clicked_map:
+                st.session_state.map_course = clicked_map
+                map_sel = clicked_map
+            st.caption(f"총 {len(listed):,}곳 · 목록에서 골프장을 누르면 왼쪽 지도가 그 위치로 이동해요")
         with left:
             st.markdown("##### 📍 골프장 위치 (OpenStreetMap)")
             if len(listed):
-                st_folium(folium_map(listed), height=460, use_container_width=True, returned_objects=[])
+                if map_sel:
+                    frow = listed[listed["course"] == map_sel].iloc[0]
+                    st.markdown(f"**📌 {map_sel}** · {frow['city']} · {frow['holes']}홀 · {frow['gubun']}")
+                st_folium(folium_map(listed, focus=map_sel), height=460,
+                          use_container_width=True, returned_objects=[])
             else:
                 st.info("검색 결과가 없어 지도에 표시할 골프장이 없어요.")
-            st.caption("※ 빨간 점을 클릭하면 길찾기 버튼이 나와요. 좌표는 지역 기준 근사값(공공데이터에 좌표 미포함).")
+            st.caption("※ 초록 점이 선택한 골프장이에요. 점을 클릭하면 길찾기 버튼이 나와요. "
+                       "좌표는 지역 기준 근사값(공공데이터에 좌표 미포함).")
 
 # ---------------- 탭 3: 날씨 ----------------
 with tab3:
     if len(f):
-        course = st.selectbox("골프장 선택", sorted(f["course"].unique()))
-        row = f[f["course"] == course].iloc[0]
-        st.markdown(f"##### ☀️ {course} ({row['city']}) 날씨 예보")
+        wcourses = (f.dropna(subset=["lat", "lon"]).drop_duplicates("course")
+                    .sort_values("course")[["course", "region", "city", "holes", "gubun", "lat", "lon"]])
+        # ---- 골프장 검색(한 글자씩 실시간) + 클릭 가능한 결과 ----
+        st.markdown("##### 🔎 골프장 검색")
+        wq = st_keyup("wx검색", placeholder="🔍 골프장 이름 검색 (한 글자씩 실시간)",
+                      debounce=150, label_visibility="collapsed", key="wx_search")
+        wlisted = wcourses
+        if wq:
+            wlisted = wlisted[wlisted["course"].str.contains(wq.strip(), case=False, na=False)]
+        w_items = [
+            {"course": r["course"], "sub": f"{r['city']} · {r['holes']}홀 · {r['gubun']}"}
+            for _, r in wlisted.iterrows()
+        ]
+        wx_sel = st.session_state.get("wx_course")
+        if wx_sel and not (wlisted["course"] == wx_sel).any():
+            wx_sel = None
+        clicked_wx = _course_list(items=w_items, selected=wx_sel, key="wx_list", default=None)
+        if clicked_wx:
+            st.session_state.wx_course = clicked_wx
+            wx_sel = clicked_wx
+        # 클릭 안 했으면 검색결과 첫 번째를 기본으로
+        if not wx_sel:
+            wx_sel = wlisted.iloc[0]["course"] if len(wlisted) else None
+
+    if len(f) and wx_sel:
+        row = wcourses[wcourses["course"] == wx_sel].iloc[0]
+        st.markdown(f"##### ☀️ {wx_sel} ({row['city']}) 날씨 예보")
 
         raw = weather_raw(float(row["lat"]), float(row["lon"]))
         real = raw is not None
+        # ---- 날짜 선택: 주간 예보와 시간대별 예보를 함께 바꿈 ----
+        wx_pick = st.date_input("날짜 선택 (이 날짜부터 7일 주간예보 + 시간대별)",
+                                value=TODAY, min_value=TODAY,
+                                max_value=TODAY + dt.timedelta(days=15),
+                                format="YYYY-MM-DD", key="wx_date")
+        pick_iso = wx_pick.isoformat()
         if real:
-            fc = wx.om_daily(raw, days=7)
+            all_daily = wx.om_daily(raw, days=16)
             st.caption("✅ 실시간 날씨 예보 (Open-Meteo · 무료)")
         else:
-            fc = wx.sample_forecast(7)
+            all_daily = wx.sample_forecast(16)
             st.caption("※ 인터넷 연결이 없어 샘플 예보입니다.")
-        wdf = pd.DataFrame(fc)
+        # 선택한 날짜부터 7일치
+        week = [d for d in all_daily if d["date"] >= pick_iso][:7] or all_daily[:7]
+        wdf = pd.DataFrame(week)
         if len(wdf):
-            st.markdown("###### 📅 주간 예보")
+            st.markdown(f"###### 📅 주간 예보 ({pick_iso}부터 7일)")
             cols = st.columns(min(7, len(wdf)))
             for i, (_, w) in enumerate(wdf.head(7).iterrows()):
                 with cols[i % len(cols)]:
@@ -1104,11 +1161,6 @@ with tab3:
                         unsafe_allow_html=True)
 
             st.markdown("###### ⏰ 시간대별 날씨 (0~23시)")
-            wx_pick = st.date_input("날짜 선택",
-                                    value=TODAY, min_value=TODAY,
-                                    max_value=TODAY.replace(year=TODAY.year + 5),
-                                    format="YYYY-MM-DD", key="wx_date")
-            pick_iso = wx_pick.isoformat()
             hourly = wx.om_hourly(raw, pick_iso) if real else []
             if hourly:
                 st.caption(f"{pick_iso} · ✅ 실시간 시간대별 예보 (Open-Meteo)")
@@ -1129,6 +1181,8 @@ with tab3:
             st.caption("가로로 스크롤하면 0시~23시 전체가 보여요 · 숫자: 기온 · 💧강수확률 · 🌬바람(m/s)")
         else:
             st.info("예보를 불러오지 못했습니다. 잠시 후 다시 시도하세요.")
+    elif len(f):
+        st.info("검색 결과가 없어요. 다른 이름으로 검색해보세요.")
 
 # ---------------- 탭 4: 전국 골프장 검색 ----------------
 with tab4:
