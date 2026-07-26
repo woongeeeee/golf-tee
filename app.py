@@ -320,6 +320,23 @@ def caddie_badge(raw: str) -> str:
 
 
 CADDIE_FILTER_OPTS = ["캐디필수", "노캐디", "캐디선택가능"]
+CADDIE_KEYS = (("캐디필수", "cad_req"), ("노캐디", "cad_no"), ("캐디선택가능", "cad_sel"))
+
+
+def booking_url(seq, date: str) -> str:
+    """티스캐너 골프장 예약 상세 페이지 URL(선택한 날짜로 바로 이동)."""
+    try:
+        s = int(seq)
+    except (TypeError, ValueError):
+        return "https://www.teescanner.com"
+    return ("https://www.teescanner.com/booking/detail?tab=teetime"
+            f"&golfclub_seq={s}&roundDay={date}&isJoin=N&entry_path=MP&step=1")
+
+
+def caddie_picks() -> list:
+    """캐디 체크박스 상태 → 선택된 캐디 종류 목록(하나도 없으면 전체)."""
+    picks = [label for label, k in CADDIE_KEYS if st.session_state.get(k, True)]
+    return picks or CADDIE_FILTER_OPTS
 
 
 def caddie_class(raw: str) -> str:
@@ -470,8 +487,9 @@ def filter_tee_times(ttdf: pd.DataFrame, am: bool, night: bool) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
-def tee_time_table_html(ttdf: pd.DataFrame) -> str:
+def tee_time_table_html(ttdf: pd.DataFrame, seq=None, date: str = "") -> str:
     """티스캐너 티타임 DataFrame → HTML 테이블(지역별 특가/골프장 검색 공용)."""
+    url = booking_url(seq, date)
     trows = []
     for _, t in ttdf.iterrows():
         gf = f"{int(t['green_fee']):,}원" if pd.notna(t["green_fee"]) else "-"
@@ -483,7 +501,7 @@ def tee_time_table_html(ttdf: pd.DataFrame) -> str:
             f"<tr><td class='dt' style='font-weight:800'>{t['time']}</td>"
             f"<td class='money'>{gf_html} {org}</td>"
             f"<td>{t['caddie']}</td><td>{t['course']}</td><td>{t['people']}인</td>"
-            f"<td><a class='book-btn' href='https://www.teescanner.com' target='_blank' rel='noopener'>예약</a></td></tr>"
+            f"<td><a class='book-btn' href='{url}' target='_blank' rel='noopener'>예약</a></td></tr>"
         )
     return (
         "<div class='table-wrap'><table class='golf-table'><thead><tr>"
@@ -564,7 +582,7 @@ def deal_popup_real(deals: pd.DataFrame, date: str, tokens=None):
                 f"<div class='meta'>{meta}</div></div>"
                 f"<div style='text-align:right;display:flex;align-items:center;gap:14px'>"
                 f"{cad}<div class='pr'>{price}</div>"
-                f"<a class='book-btn' href='https://www.teescanner.com' target='_blank' rel='noopener'>예약</a>"
+                f"<a class='book-btn' href='{booking_url(r.get('seq'), date)}' target='_blank' rel='noopener'>예약</a>"
                 f"</div></div>"
             )
     st.markdown("".join(rows), unsafe_allow_html=True)
@@ -641,7 +659,7 @@ if date_capped:
     target_dates = target_dates[:MAX_DATES]
 only_am = st.session_state.get("only_am", False)
 only_night = st.session_state.get("only_night", False)
-caddie_sel = st.session_state.get("caddie_sel", CADDIE_FILTER_OPTS) or CADDIE_FILTER_OPTS
+caddie_sel = caddie_picks()
 
 # 지도·날씨 탭용 샘플(지역·캐디 필터는 전체 기본)
 df = load_data(USE_SAMPLE, tuple(d.isoformat() for d in target_dates))
@@ -784,9 +802,11 @@ with tab1:
             oc1, oc2 = st.columns(2)
             oc1.checkbox("오전 티타임만 (12시 이전)", value=False, key="only_am")
             oc2.checkbox("야간 티타임만 (17시 이후)", value=False, key="only_night")
-            st.multiselect("캐디 선택", CADDIE_FILTER_OPTS, default=CADDIE_FILTER_OPTS,
-                           key="caddie_sel",
-                           help="캐디필수 · 노캐디 · 캐디선택가능 중 보고 싶은 것만 남기세요")
+            st.markdown("**캐디 선택** — 보고 싶은 것만 체크하세요")
+            cc1, cc2, cc3 = st.columns(3)
+            cc1.checkbox("캐디필수", value=True, key="cad_req")
+            cc2.checkbox("노캐디", value=True, key="cad_no")
+            cc3.checkbox("캐디선택가능", value=True, key="cad_sel")
             st.caption("👇 아래 버튼을 누르면 위 설정으로 전국 최저가를 검색해요")
             scan_clicked = st.button(f"⚡ {real_date} 전국 최저가 스캔",
                                      type="primary", key="scan_btn",
@@ -826,7 +846,7 @@ with tab1:
                 sv = sv[sv["region"] == sreg]
             if squery:
                 sv = sv[sv["course"].str.contains(squery.strip(), case=False, na=False)]
-            caddie_pick = st.session_state.get("caddie_sel", CADDIE_FILTER_OPTS) or CADDIE_FILTER_OPTS
+            caddie_pick = caddie_picks()
             if len(caddie_pick) < len(CADDIE_FILTER_OPTS):
                 sv = sv[sv["caddie"].map(caddie_class).isin(caddie_pick)]
             sv = sv.sort_values("min_cost", ascending=(ssort == "가격 낮은순")).reset_index(drop=True)
@@ -875,7 +895,7 @@ with tab1:
                     ttdf = filter_tee_times(ttdf, only_am, only_night)
                     if len(ttdf):
                         st.caption(f"✅ {detail_course} · {real_date} · 티타임 {len(ttdf)}개 (시간순)")
-                        st.markdown(tee_time_table_html(ttdf), unsafe_allow_html=True)
+                        st.markdown(tee_time_table_html(ttdf, sel["seq"], real_date), unsafe_allow_html=True)
                     else:
                         st.info(f"{detail_course}는 {real_date}에 (오전/야간 필터 포함) 예약 가능한 티타임이 없어요.")
                 except Exception as e:
@@ -896,7 +916,8 @@ with tab1:
                     f"<td class='course'>{r['course']}</td><td>{r['area']}</td>"
                     f"<td class='money'>{price_html}</td><td>{r['gubun']}</td><td>{review}</td>"
                     f"<td style='text-align:left'>{r['benefit']}</td>"
-                    f"<td><a class='book-btn' href='https://www.teescanner.com' target='_blank' rel='noopener'>예약</a></td></tr>"
+                    f"<td><a class='book-btn' href='{booking_url(r.get('seq'), real_date)}' "
+                    f"target='_blank' rel='noopener'>예약</a></td></tr>"
                 )
             table = (
                 "<div class='table-wrap'><table class='golf-table'><thead><tr>"
@@ -965,7 +986,7 @@ with tab1:
                     cttdf = filter_tee_times(cttdf, only_am, only_night)
                     if len(cttdf):
                         st.caption(f"✅ {sel['course']} · {real_date} · 티타임 {len(cttdf)}개 (시간순)")
-                        st.markdown(tee_time_table_html(cttdf), unsafe_allow_html=True)
+                        st.markdown(tee_time_table_html(cttdf, sel["seq"], real_date), unsafe_allow_html=True)
                     else:
                         st.info(f"{sel['course']}는 {real_date}에 (오전/야간 필터 포함) 예약 가능한 티타임이 없어요. "
                                 "위쪽 날짜나 필터를 바꿔보세요.")
@@ -1116,7 +1137,8 @@ with tab4:
                         sttdf = filter_tee_times(sttdf, only_am, only_night)
                         if len(sttdf):
                             st.caption(f"✅ {sel['course']} · {search_date.isoformat()} · 티타임 {len(sttdf)}개 (시간순)")
-                            st.markdown(tee_time_table_html(sttdf), unsafe_allow_html=True)
+                            st.markdown(tee_time_table_html(sttdf, sel["seq"], search_date.isoformat()),
+                                        unsafe_allow_html=True)
                         else:
                             st.info(f"{sel['course']}는 {search_date.isoformat()}에 (오전/야간 필터 포함) "
                                     "예약 가능한 티타임이 없어요. 다른 날짜나 필터를 골라보세요.")
