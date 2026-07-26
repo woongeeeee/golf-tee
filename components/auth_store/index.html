@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><style>html,body{margin:0;padding:0;height:0;overflow:hidden;background:transparent;}</style></head>
+<body>
+<script>
+  // 로그인 유지용 저장소: 브라우저 localStorage에 토큰을 보관해 새로고침해도 로그인이 풀리지 않게 함.
+  const KEY = "ts_auth_v1";
+  function post(msg){ window.parent.postMessage(Object.assign({isStreamlitMessage:true}, msg), "*"); }
+  function ready(){ post({type:"streamlit:componentReady", apiVersion:1}); }
+  function setH(h){ post({type:"streamlit:setFrameHeight", height:h}); }
+  function setVal(v){ post({type:"streamlit:setComponentValue", value:v, dataType:"json"}); }
+
+  function handle(payload){
+    let stored = "";
+    try {
+      if(payload === "__CLEAR__"){
+        localStorage.removeItem(KEY);
+        stored = "";
+      } else if(payload === "__LOAD__" || payload == null){
+        stored = localStorage.getItem(KEY) || "";
+      } else {
+        localStorage.setItem(KEY, payload);
+        stored = payload;
+      }
+    } catch(e){ stored = ""; }
+    setVal(stored);
+    setH(0);
+  }
+
+  window.addEventListener("message", (e)=>{
+    if(e.data && e.data.type==="streamlit:render"){
+      const a = e.data.args || {};
+      handle(a.payload);
+    }
+  });
+  ready();
+</script>
+</body>
+</html>

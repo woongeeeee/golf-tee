@@ -54,7 +54,15 @@
     return "#DC2626";
   }
 
-  function render(rows, selected){
+  function bookUrl(seq, date){
+    if(seq==null || seq==="") return "https://www.teescanner.com";
+    return "https://www.teescanner.com/booking/detail?tab=teetime"
+      + "&golfclub_seq=" + encodeURIComponent(seq)
+      + "&roundDay=" + encodeURIComponent(date||"")
+      + "&isJoin=N&entry_path=MP&step=1";
+  }
+
+  function render(rows, selected, date){
     if(!rows || !rows.length){ R.innerHTML = "<div class='empty'>표시할 골프장이 없어요.</div>"; setH(90); return; }
     let h = "<div class='table-wrap'><table class='golf-table'><thead><tr>"
       + "<th>번호</th><th>골프장</th><th>지역</th><th>최저 그린피</th><th>코스</th><th>캐디</th><th>평점</th><th>예약</th>"
@@ -74,7 +82,7 @@
         + "<td class='price'>"+priceHtml+"</td>"
         + "<td>"+esc(r.course_name)+"</td>"
         + "<td>"+cad+"</td><td>"+score+"</td>"
-        + "<td><a class='book' href='https://www.teescanner.com' target='_blank' rel='noopener' onclick='event.stopPropagation()'>예약</a></td>"
+        + "<td><a class='book' href='"+bookUrl(r.seq, date)+"' target='_blank' rel='noopener' onclick='event.stopPropagation()'>예약</a></td>"
         + "</tr>";
     });
     h += "</tbody></table></div>";
@@ -93,7 +101,7 @@
   window.addEventListener("message", (e)=>{
     if(e.data && e.data.type==="streamlit:render"){
       const a = e.data.args || {};
-      render(a.rows || [], a.selected);
+      render(a.rows || [], a.selected, a.date);
     }
   });
   ready();

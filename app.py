@@ -6,6 +6,7 @@ app.py  —  전국 골프장 티타임 통합검색 (티스캐너 스타일)
 import calendar
 import datetime as dt
 import html as _html
+import json
 from pathlib import Path
 from urllib.parse import quote
 
@@ -34,6 +35,10 @@ MAX_DATES = 45            # 성능 보호: 한 번에 생성/표시할 최대 �
 # 클릭 가능한 스타일 표(커스텀 컴포넌트) — 행 클릭 시 새로고침 없이 선택값을 반환
 _scan_table = components.declare_component(
     "scan_table", path=str(Path(__file__).parent / "components" / "scan_table"))
+
+# 로그인 유지용 저장소(브라우저 localStorage) — 새로고침해도 로그인이 풀리지 않게 함
+_auth_store = components.declare_component(
+    "auth_store", path=str(Path(__file__).parent / "components" / "auth_store"))
 
 
 def _secret(k: str):
@@ -246,6 +251,11 @@ section[data-testid="stSidebar"],
 iframe[title="st_keyup.st_keyup"] { height: 40px !important; display:block; margin:0 !important; }
 [data-testid="stCustomComponentV1"]:has(iframe[title="st_keyup.st_keyup"]) {
     height: 40px !important; margin-bottom:0 !important; }
+
+/* ---------- 로그인 유지 저장소(auth_store) — 눈에 안 보이게 완전 숨김 ---------- */
+iframe[title="auth_store.auth_store"] { height:0 !important; display:block; margin:0 !important; }
+[data-testid="stCustomComponentV1"]:has(iframe[title="auth_store.auth_store"]) {
+    height:0 !important; margin:0 !important; padding:0 !important; }
 
 /* ---------- 지도탭: CC 검색 결과 스크롤 목록 ---------- */
 .cc-list { max-height: 400px; overflow-y:auto; border:1px solid #dcebd5; border-radius:12px;
@@ -607,6 +617,28 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------- 티스캐너 로그인 (각자 자기 계정) ----------
+# 로그인 유지: 브라우저 localStorage에 토큰을 저장해 새로고침해도 로그인이 풀리지 않음.
+if st.session_state.get("user_tokens"):
+    _t = st.session_state["user_tokens"]
+    _auth_payload = json.dumps({"t": _t[0], "r": _t[1],
+                                "n": st.session_state.get("user_name", "회원")})
+elif st.session_state.pop("just_logged_out", False):
+    _auth_payload = "__CLEAR__"
+else:
+    _auth_payload = "__LOAD__"
+_stored = _auth_store(payload=_auth_payload, key="auth_store", default=None)
+# 저장된 로그인 복원(세션에 없고, 방금 로그아웃한 게 아닐 때)
+if (not st.session_state.get("user_tokens") and _auth_payload == "__LOAD__"
+        and _stored):
+    try:
+        _d = json.loads(_stored)
+        if _d.get("t") and _d.get("r"):
+            st.session_state.user_tokens = (_d["t"], _d["r"])
+            st.session_state.user_name = _d.get("n", "회원")
+            st.rerun()
+    except Exception:
+        pass
+
 USER_TOKENS = st.session_state.get("user_tokens")
 if USER_TOKENS:
     uc1, uc2 = st.columns([4, 1], vertical_alignment="center")
@@ -614,6 +646,7 @@ if USER_TOKENS:
     if uc2.button("로그아웃", key="logout_btn", width="stretch"):
         st.session_state.pop("user_tokens", None)
         st.session_state.pop("user_name", None)
+        st.session_state.just_logged_out = True
         st.rerun()
 else:
     with st.container(border=True):
@@ -799,14 +832,13 @@ with tab1:
                 ycol, mcol = st.columns(2)
                 ycol.selectbox("연도", years, format_func=lambda y: f"{y}년", key="scan_year")
                 mcol.selectbox("월", ["전체"] + [f"{m}월" for m in range(1, 13)], key="scan_month")
-            oc1, oc2 = st.columns(2)
-            oc1.checkbox("오전 티타임만 (12시 이전)", value=False, key="only_am")
-            oc2.checkbox("야간 티타임만 (17시 이후)", value=False, key="only_night")
-            st.markdown("**캐디 선택** — 보고 싶은 것만 체크하세요")
-            cc1, cc2, cc3 = st.columns(3)
-            cc1.checkbox("캐디필수", value=True, key="cad_req")
-            cc2.checkbox("노캐디", value=True, key="cad_no")
-            cc3.checkbox("캐디선택가능", value=True, key="cad_sel")
+            st.markdown("**옵션 선택** — 원하는 항목만 체크하세요")
+            o1, o2, o3, o4, o5 = st.columns(5)
+            o1.checkbox("오전만", value=False, key="only_am", help="12시 이전 티타임만")
+            o2.checkbox("야간만", value=False, key="only_night", help="17시 이후 티타임만")
+            o3.checkbox("캐디필수", value=True, key="cad_req")
+            o4.checkbox("노캐디", value=True, key="cad_no")
+            o5.checkbox("캐디선택가능", value=True, key="cad_sel")
             st.caption("👇 아래 버튼을 누르면 위 설정으로 전국 최저가를 검색해요")
             scan_clicked = st.button(f"⚡ {real_date} 전국 최저가 스캔",
                                      type="primary", key="scan_btn",
@@ -863,6 +895,7 @@ with tab1:
                              if has_cname and pd.notna(r.get("course_name")) and str(r["course_name"]).strip()
                              else "-")
                     rows.append({
+                        "seq": (None if pd.isna(r.get("seq")) else int(r["seq"])),
                         "course": str(r["course"]),
                         "area": str(r["area"]),
                         "min_cost": int(r["min_cost"]),
@@ -873,7 +906,8 @@ with tab1:
                         "is_best": bool(r["min_cost"] == best_price),
                     })
                 selected = st.session_state.get("scan_sel_course")
-                clicked = _scan_table(rows=rows, selected=selected, key="scan_tbl", default=None)
+                clicked = _scan_table(rows=rows, selected=selected, date=real_date,
+                                      key="scan_tbl", default=None)
                 if clicked:
                     st.session_state.scan_sel_course = clicked
                     selected = clicked
