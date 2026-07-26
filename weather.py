@@ -29,13 +29,15 @@ def _wtext(code) -> str:
         return "흐림"
 
 
-def fetch_openmeteo(lat: float, lon: float, days: int = 16) -> dict | None:
-    """Open-Meteo 예보 원본(JSON) 반환. 실패 시 None."""
+def fetch_openmeteo(lat: float, lon: float, days: int = 16, past_days: int = 3) -> dict | None:
+    """Open-Meteo 예보 원본(JSON) 반환. 실패 시 None.
+    past_days: 오늘 이전 며칠치도 함께 받아 '선택일 전 3일' 주간예보에 사용."""
     params = {
         "latitude": lat, "longitude": lon,
         "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code,wind_speed_10m_max",
         "hourly": "temperature_2m,precipitation_probability,weather_code,wind_speed_10m",
-        "timezone": "Asia/Seoul", "forecast_days": days, "wind_speed_unit": "ms",
+        "timezone": "Asia/Seoul", "forecast_days": days, "past_days": past_days,
+        "wind_speed_unit": "ms",
     }
     try:
         r = requests.get(OM_URL, params=params, timeout=12)
