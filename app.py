@@ -33,7 +33,7 @@ st.set_page_config(page_title="웅SCANNER · 전국 골프장 티타임",
 TODAY = dt.date.today()
 MONTH_RANGE_LABEL = f"{TODAY.month}~{TODAY.month % 12 + 1}월"  # 당월~다음월 (월 바뀌면 자동 변경)
 DEAL_LIMIT_PRICE = 70000  # 특가 기준 그린피(원)
-POPUP_PRICE_CAP = 50000   # 30일 특가 팝업 기준(그린피 5만원 이하)
+POPUP_PRICE_CAP = 60000   # 18홀 기준 그린피 6만원 이하(9홀은 x2가 6만원 이하일 때만)
 POPUP_DAYS = 30           # 오늘부터 며칠간의 특가를 모을지
 MAX_DATES = 45            # 성능 보호: 한 번에 생성/표시할 최대 날짜 수
 
@@ -907,12 +907,12 @@ st.markdown(f"""
 
 @st.fragment
 def deal_panel(tokens, fallback):
-    """오늘부터 30일 · 5만원 이하 특가 패널(지역 다중선택 + 닫기).
+    """오늘부터 30일 · 6만원 이하 특가 패널(지역 다중선택 + 닫기).
     패널 틀을 먼저 그리고, 데이터는 안에서 불러와서 '아예 안 뜨는' 문제를 방지."""
     allr = list(ts.REGION_MAP.keys())
     with st.container(border=True, key="deal_modal"):
         hc = st.columns([6, 2.2, 1.6], vertical_alignment="center")
-        hc[0].markdown(f"#### 🔥 오늘부터 {POPUP_DAYS}일 특가 · 그린피 5만원 이하")
+        hc[0].markdown(f"#### 🔥 오늘부터 {POPUP_DAYS}일 특가 · 18홀 기준 6만원 이하")
         with hc[1]:
             pk_prev = [r for r in allr if st.session_state.get(f"dealreg_{r}", True)]
             lbl = ("🗺️ 지역 전체" if len(pk_prev) == len(allr)
@@ -934,62 +934,84 @@ def deal_panel(tokens, fallback):
                 st.session_state.deal_open = False
                 st.rerun()
 
-        # 데이터: 오늘부터 30일 ≤5만원. 비면 오늘 특가(fallback)로 대체.
+        # 데이터: 오늘부터 30일. 비면 오늘 특가(fallback).
         with st.spinner("특가 불러오는 중..."):
             try:
                 rng = ts_deals_range(TODAY.isoformat(), POPUP_DAYS, tokens)
             except Exception:
                 rng = pd.DataFrame()
-        # 0원(가격 미정)은 제외 — 실제 금액이 책정된 것만
-        deals30 = (rng[rng["min_cost"].notna() & (rng["min_cost"] > 0)
-                       & (rng["min_cost"] <= POPUP_PRICE_CAP)]
-                   if len(rng) else pd.DataFrame())
+        # 후보: 0원 제외 + 원가 6만원 이하(9홀 x2도 6만원 넘으려면 원가 3만↑라 후보는 6만 이하로 충분)
+        cand = (rng[rng["min_cost"].notna() & (rng["min_cost"] > 0)
+                    & (rng["min_cost"] <= POPUP_PRICE_CAP)]
+                if len(rng) else pd.DataFrame())
         used_fallback = False
-        if not len(deals30) and fallback is not None and len(fallback):
-            deals30 = fallback[fallback["min_cost"].notna() & (fallback["min_cost"] > 0)
-                               & (fallback["min_cost"] <= POPUP_PRICE_CAP)]
+        if not len(cand) and fallback is not None and len(fallback):
+            cand = fallback[fallback["min_cost"].notna() & (fallback["min_cost"] > 0)
+                            & (fallback["min_cost"] <= POPUP_PRICE_CAP)]
             used_fallback = True
 
-        if not len(deals30):
-            st.info("지금은 5만원 이하 특가 매물이 없어요. (티스캐너 추천특가 기준 · 날짜/지역에 따라 없을 수 있어요) "
+        if not len(cand):
+            st.info("지금은 조건에 맞는 특가 매물이 없어요. (티스캐너 추천특가 기준 · 날짜/지역에 따라 없을 수 있어요) "
                     "잠시 뒤 **🔥 다시 보기**를 눌러보세요.")
         else:
             if used_fallback:
                 st.caption("⚠️ 30일 특가 조회가 비어 있어 **오늘 기준 특가**로 보여드려요.")
-            # 캐디·홀 정보는 전체 특가(가격순 상위 120)에서 한 번만 병렬 수집 → 지역 바꿔도 빠름
-            base = deals30.sort_values("min_cost").head(120)
+            # 후보(원가 낮은순 상위 180)의 캐디·홀 정보를 한 번만 병렬 수집
+            base = cand.sort_values("min_cost").head(180)
             pairs = tuple((r["date"], int(r["seq"])) for _, r in base.iterrows()
                           if pd.notna(r.get("seq")))
             with st.spinner("캐디·홀 정보 확인 중..."):
                 details = ts_deal_details(pairs, tokens)
+
+            # 18홀 기준 가격 계산: 9홀은 x2, 18홀/미상은 그대로. 18홀 기준 6만원 이하만.
+            recs = []
+            for _, r in base.iterrows():
+                if pd.isna(r.get("seq")):
+                    continue
+                key = (r["date"], int(r["seq"]))
+                cad_raw, cname = details.get(key, ("", ""))
+                holes = holes_from_name(cname)
+                raw = int(r["min_cost"])
+                if holes == "9홀":
+                    price18, basis = raw * 2, "9홀×2"
+                else:
+                    price18, basis = raw, "18홀"    # 18홀 또는 미상은 그대로(18홀 기준)
+                if price18 <= POPUP_PRICE_CAP:
+                    recs.append({"course": r["course"], "region_kr": r.get("region_kr", ""),
+                                 "date": r["date"], "seq": int(r["seq"]),
+                                 "price18": price18, "raw": raw, "basis": basis, "caddie": cad_raw})
+            final = pd.DataFrame(recs)
+
             pick = [r for r in allr if st.session_state.get(f"dealreg_{r}", True)]
-            dv = deals30
-            if not pick:
-                dv = dv.iloc[0:0]
-            elif len(pick) < len(allr):
-                dv = dv[dv["region_kr"].isin(pick)]
-            dv = dv.sort_values(["min_cost", "date"]).reset_index(drop=True)
+            dv = final
+            if len(final):
+                if not pick:
+                    dv = dv.iloc[0:0]
+                elif len(pick) < len(allr):
+                    dv = dv[dv["region_kr"].isin(pick)]
+                dv = dv.sort_values(["price18", "date"]).reset_index(drop=True)
             if not len(dv):
-                st.info("선택한 지역에는 5만원 이하 특가가 없어요. 지역을 바꿔보세요.")
+                st.info("선택한 지역에는 18홀 기준 6만원 이하 특가가 없어요. 지역을 바꿔보세요.")
             else:
-                st.caption(f"총 {len(dv):,}건 · 가격 낮은순 · 캐디 여부·홀수 확인하고 예약하세요")
+                st.caption(f"총 {len(dv):,}건 · 18홀 기준 가격 낮은순 (9홀은 그린피×2로 계산)")
                 rows = []
                 for _, r in dv.head(80).iterrows():
-                    price = f"{int(r['min_cost']):,}원"
-                    key = (r["date"], int(r["seq"])) if pd.notna(r.get("seq")) else None
-                    cad_raw, cname = details.get(key, ("", "")) if key else ("", "")
-                    cad = caddie_pill(cad_raw)
-                    holes = holes_from_name(cname)
-                    holes_html = (f"<span style='color:#2b6b3f;font-weight:800'>· {holes} 기준</span>"
-                                  if holes else "")
-                    url = booking_url(r.get("seq"), r["date"])
+                    cad = caddie_pill(str(r["caddie"]))
+                    price = f"{int(r['price18']):,}원"
+                    if r["basis"] == "9홀×2":
+                        basis_html = (f"<span style='color:#c026d3;font-weight:800'>· 9홀×2</span>")
+                        price_sub = f"<div style='font-size:11px;color:#8a9a8f'>(9홀 {int(r['raw']):,}원)</div>"
+                    else:
+                        basis_html = "<span style='color:#2b6b3f;font-weight:800'>· 18홀</span>"
+                        price_sub = ""
+                    url = booking_url(r["seq"], r["date"])
                     rows.append(
                         "<div class='deal-row'>"
                         f"<div><div class='name'>{r['course']} "
-                        f"<span style='color:#7a8f80;font-weight:600'>· {r.get('region_kr','')}</span></div>"
-                        f"<div class='meta'>📅 {r['date']}  {holes_html}</div></div>"
+                        f"<span style='color:#7a8f80;font-weight:600'>· {r['region_kr']}</span></div>"
+                        f"<div class='meta'>📅 {r['date']}  {basis_html}</div></div>"
                         "<div style='text-align:right;display:flex;align-items:center;gap:10px'>"
-                        f"{cad}<div class='pr'>{price}</div>"
+                        f"{cad}<div><div class='pr'>{price}</div>{price_sub}</div>"
                         f"<a class='book-btn' href='{url}' target='_blank' rel='noopener'>예약</a></div></div>")
                 with st.container(height=430):
                     st.markdown("".join(rows), unsafe_allow_html=True)
