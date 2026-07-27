@@ -452,9 +452,10 @@ def ts_catalog() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600)
-def ts_scan(date: str) -> pd.DataFrame:
-    """해당 날짜의 '전국 최저가 스캔' 결과(scan_<날짜>.json) 로드. 없으면 빈 DF."""
-    return pd.DataFrame(SCAN.load(date))
+def ts_scan(date: str, min_hour=None) -> pd.DataFrame:
+    """해당 날짜의 '전국 최저가 스캔' 결과 로드. 없으면 빈 DF.
+    min_hour(당일 야간=16)면 그 시각 이후만 스캔한 별도 결과를 로드."""
+    return pd.DataFrame(SCAN.load(date, min_hour))
 
 
 @st.cache_data(ttl=300)
@@ -497,19 +498,21 @@ def ts_cheapest_caddie(date: str, seq: int, tokens) -> str:
     return str(row.get("caddie") or "")
 
 
-def filter_tee_times(ttdf: pd.DataFrame, am: bool, night: bool) -> pd.DataFrame:
-    """실제 티타임 표에 오전(12시 이전)·야간(17시 이후) 필터 적용."""
+def filter_tee_times(ttdf: pd.DataFrame, am: bool, night: bool, night_hour: int = 17) -> pd.DataFrame:
+    """실제 티타임 표에 오전(12시 이전)·야간(기본 17시 이후) 필터 적용.
+    night_hour로 야간 기준 시각을 바꿀 수 있음(당일 야간은 16시)."""
     if not len(ttdf) or not (am or night):
         return ttdf
     def _hr(t):
         s = str(t).strip()
-        return int(s[:2]) if len(s) >= 2 and s[:2].isdigit() else -1
+        s = s.split(":")[0] if ":" in s else s[:2]
+        return int(s) if s.isdigit() else -1
     h = ttdf["time"].map(_hr)
     out = ttdf
     if am:
         out = out[h < 12]
     if night:
-        out = out[h >= 17]
+        out = out[h >= night_hour]
     return out.reset_index(drop=True)
 
 
@@ -703,6 +706,12 @@ else:
     else:
         target_dates = month_dates(_year, int(_month_opt.replace("월", "")))
         period_label = f"{_year}년 {_month_opt}"
+# 🌙 당일 야간 모드: 날짜를 오늘로 고정하고 16시 이후만 대상으로 함
+TODAY_NIGHT = bool(st.session_state.get("today_night", False))
+NIGHT_MIN_HOUR = 16 if TODAY_NIGHT else None
+if TODAY_NIGHT:
+    target_dates = [TODAY]
+    period_label = TODAY.isoformat()
 date_capped = len(target_dates) > MAX_DATES
 if date_capped:
     target_dates = target_dates[:MAX_DATES]
@@ -743,13 +752,13 @@ if REAL:
 USE_REAL = REAL and len(real_all) > 0
 
 # 전국 최저가 스캔(전체 골프장 훑어 계산한 실제 최저가). 있으면 특가/KPI/팝업의 기준이 됨.
-scan_df = ts_scan(real_date) if REAL else pd.DataFrame()
+scan_df = ts_scan(real_date, NIGHT_MIN_HOUR) if REAL else pd.DataFrame()
 USE_SCAN = REAL and len(scan_df) > 0
 
 # ============================ 히어로 ============================
 if USE_SCAN:
-    chip = (f"📅 {real_date} · 전국 · 골프장 {len(scan_df):,}곳 · "
-            f"<b>🔴 전국 최저가 스캔</b>")
+    _scan_tag = "🌙 당일 야간 최저가(16시↑)" if TODAY_NIGHT else "🔴 전국 최저가 스캔"
+    chip = (f"📅 {real_date} · 전국 · 골프장 {len(scan_df):,}곳 · <b>{_scan_tag}</b>")
 elif USE_REAL:
     chip = (f"📅 {real_date} · 전국 · 골프장 {real_all['seq'].nunique():,}곳 · "
             f"<b>🔴 티스캐너 추천 특가</b>")
@@ -815,6 +824,9 @@ elif USE_REAL:
         + kpi("🔥", "추천 특가", f"{len(real_all)}곳")
     )
     st.markdown(f"<div class='kpi-grid'>{cards}</div>", unsafe_allow_html=True)
+elif REAL and TODAY_NIGHT:
+    st.info("🌙 **당일 야간** 모드예요. 아래 **📋 티타임 목록** 탭에서 "
+            "**🌙 오늘 야간(16시↑) 최저가 스캔** 버튼을 눌러 오늘 남은 야간 티타임을 모아보세요.")
 elif REAL:
     st.info(f"📅 **{real_date}** 은 예약 가능한 데이터가 없어요. "
             "아래 **📋 티타임 목록** 탭의 **📅 날짜·선택사항 설정**에서 "
@@ -826,7 +838,7 @@ else:
 # 검색 응답속도 개선: 지도·날씨 탭과 전국최저가 표는 st.fragment로 감싸 '그 부분만' 다시 그리게 함
 # (검색어를 한 글자 칠 때마다 앱 전체가 아니라 이 함수만 재실행됨)
 @st.fragment
-def _scan_results_body(scan_df, real_date, tokens, only_am, only_night):
+def _scan_results_body(scan_df, real_date, tokens, only_am, only_night, today_night=False):
     sdf = scan_df.copy()
     regions_s = ["전체"] + sorted([x for x in sdf["region"].unique() if x])
     hc1, hc2, hc3 = st.columns([3, 1.2, 1.3], vertical_alignment="bottom")
@@ -891,7 +903,10 @@ def _scan_results_body(scan_df, real_date, tokens, only_am, only_night):
     sel = sv[sv["course"] == detail_course].iloc[0]
     try:
         ttdf = ts_tee_times(real_date, int(sel["seq"]), tokens)
-        ttdf = filter_tee_times(ttdf, only_am, only_night)
+        if today_night:
+            ttdf = filter_tee_times(ttdf, False, True, night_hour=16)
+        else:
+            ttdf = filter_tee_times(ttdf, only_am, only_night)
         if len(ttdf):
             st.caption(f"✅ {detail_course} · {real_date} · 티타임 {len(ttdf)}개 (시간순)")
             st.markdown(tee_time_table_html(ttdf, sel["seq"], real_date), unsafe_allow_html=True)
@@ -1046,48 +1061,62 @@ with tab1:
 
         # ---- 날짜 · 선택사항 · 스캔 버튼 (여기서 고르고 맨 아래 버튼으로 검색) ----
         with st.expander("📅 날짜 · 선택사항 설정 (여기를 눌러 열기)", expanded=not USE_SCAN):
-            smode = st.radio("조회 방식", ["특정 날짜", "월간 검색"],
-                             horizontal=True, key="date_mode")
-            if smode == "특정 날짜":
-                st.date_input("날짜", value=TODAY + dt.timedelta(days=1), min_value=TODAY,
-                              max_value=TODAY.replace(year=TODAY.year + 5),
-                              format="YYYY-MM-DD", key="scan_date")
+            st.checkbox("🌙 당일 야간만 보기 (오늘 16시 이후)", value=False, key="today_night",
+                        help="오늘 16시 이후 남은 야간 티타임만 모아 최저가를 보여줘요. "
+                             "당일 야간은 아주 싸게 나오는 경우가 많아요. (날짜는 오늘로 고정)")
+            if TODAY_NIGHT:
+                st.caption(f"🌙 **당일 야간** 모드 · 날짜는 **오늘({TODAY.isoformat()})**, "
+                           "**16시 이후** 티타임만 스캔해요.")
             else:
-                years = list(range(TODAY.year, TODAY.year + 5))
-                ycol, mcol = st.columns(2)
-                ycol.selectbox("연도", years, format_func=lambda y: f"{y}년", key="scan_year")
-                mcol.selectbox("월", ["전체"] + [f"{m}월" for m in range(1, 13)], key="scan_month")
+                smode = st.radio("조회 방식", ["특정 날짜", "월간 검색"],
+                                 horizontal=True, key="date_mode")
+                if smode == "특정 날짜":
+                    st.date_input("날짜", value=TODAY + dt.timedelta(days=1), min_value=TODAY,
+                                  max_value=TODAY.replace(year=TODAY.year + 5),
+                                  format="YYYY-MM-DD", key="scan_date")
+                else:
+                    years = list(range(TODAY.year, TODAY.year + 5))
+                    ycol, mcol = st.columns(2)
+                    ycol.selectbox("연도", years, format_func=lambda y: f"{y}년", key="scan_year")
+                    mcol.selectbox("월", ["전체"] + [f"{m}월" for m in range(1, 13)], key="scan_month")
             st.markdown("**옵션 선택** — 원하는 항목만 체크하세요")
             o1, o2, o3, o4, o5 = st.columns(5)
-            o1.checkbox("오전만", value=False, key="only_am", help="12시 이전 티타임만")
-            o2.checkbox("야간만", value=False, key="only_night", help="17시 이후 티타임만")
+            o1.checkbox("오전만", value=False, key="only_am", help="12시 이전 티타임만",
+                        disabled=TODAY_NIGHT)
+            o2.checkbox("야간만", value=False, key="only_night", help="17시 이후 티타임만",
+                        disabled=TODAY_NIGHT)
             o3.checkbox("캐디필수", value=True, key="cad_req")
             o4.checkbox("노캐디", value=True, key="cad_no")
             o5.checkbox("캐디선택가능", value=True, key="cad_sel")
             st.caption("👇 아래 버튼을 누르면 위 설정으로 전국 최저가를 검색해요")
-            scan_clicked = st.button(f"⚡ {real_date} 전국 최저가 스캔",
-                                     type="primary", key="scan_btn",
+            scan_label = (f"🌙 오늘 야간(16시↑) 최저가 스캔" if TODAY_NIGHT
+                          else f"⚡ {real_date} 전국 최저가 스캔")
+            scan_clicked = st.button(scan_label, type="primary", key="scan_btn",
                                      disabled=(n_catalog == 0), width="stretch")
         if USE_SCAN:
-            st.caption(f"✅ 스캔 완료 · {len(scan_df):,}곳 예약가능 · 버튼을 누르면 최신가로 갱신돼요")
+            tail = " · 오늘 16시 이후" if TODAY_NIGHT else ""
+            st.caption(f"✅ 스캔 완료 · {len(scan_df):,}곳 예약가능{tail} · 버튼을 누르면 최신가로 갱신돼요")
         elif n_catalog:
-            st.caption(f"전국 {n_catalog:,}곳을 훑어 실제 최저가를 계산해요 (약 1~2분 · 날짜별 1회 저장)")
+            base = ("전국 골프장의 오늘 16시 이후 야간 티타임만 훑어요"
+                    if TODAY_NIGHT else f"전국 {n_catalog:,}곳을 훑어 실제 최저가를 계산해요")
+            st.caption(f"{base} (약 1~2분 · 저장됨)")
         else:
             st.caption("먼저 '🌏 전국 전체 골프장'에서 목록을 만들어 주세요")
 
         if scan_clicked and n_catalog:
-            bar = st.progress(0.0, text="전국 최저가 스캔 중...")
+            scan_txt = "당일 야간 스캔 중..." if TODAY_NIGHT else "전국 최저가 스캔 중..."
+            bar = st.progress(0.0, text=scan_txt)
             rows = SCAN.scan_prices(
-                cat_df0.to_dict("records"), real_date, tokens=USER_TOKENS,
+                cat_df0.to_dict("records"), real_date, tokens=USER_TOKENS, min_hour=NIGHT_MIN_HOUR,
                 progress=lambda i, n, found: bar.progress(i / n, text=f"스캔 중... {i}/{n} · {found}곳 가격확인"))
-            SCAN.save(real_date, rows)
+            SCAN.save(real_date, rows, NIGHT_MIN_HOUR)
             ts_scan.clear()
             bar.empty()
             st.session_state.scan_just_done = True
             st.rerun()
 
         if USE_SCAN:
-            _scan_results_body(scan_df, real_date, USER_TOKENS, only_am, only_night)
+            _scan_results_body(scan_df, real_date, USER_TOKENS, only_am, only_night, TODAY_NIGHT)
 
         elif USE_REAL:
             st.info("아직 이 날짜의 전국 최저가 스캔이 없어요. 위 **⚡ 전국 최저가 스캔**을 누르면 "
@@ -1113,6 +1142,9 @@ with tab1:
                 "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table></div>"
             )
             st.markdown(table, unsafe_allow_html=True)
+        elif TODAY_NIGHT:
+            st.info("🌙 **당일 야간(오늘 16시 이후)** 최저가를 보려면 위 **🌙 오늘 야간(16시↑) 최저가 스캔** "
+                    "버튼을 눌러주세요. 오늘 남은 야간 티타임만 모아 최저가를 계산해요.")
         else:
             st.info(f"📅 **{real_date}** 은 예약 가능한 특가가 없어요(당일은 거의 없어요). "
                     "위 **📅 날짜·선택사항 설정**에서 **내일 이후 날짜**를 골라보세요. 특정 골프장을 찾으려면 "

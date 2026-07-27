@@ -19,11 +19,19 @@ import catalog as CAT
 HERE = Path(__file__).parent
 
 
-def scan_file(date: str) -> Path:
-    return HERE / f"scan_{date}.json"
+def scan_file(date: str, min_hour=None) -> Path:
+    suffix = f"_n{min_hour}" if min_hour is not None else ""
+    return HERE / f"scan_{date}{suffix}.json"
 
 
-def _one(club: dict, date: str, tokens=None) -> dict | None:
+def _hour(t) -> int:
+    """티타임 문자열(예: '06:18', '16:30') → 시(hour) 정수. 파싱 실패 시 -1."""
+    s = str(t).strip()
+    s = s.split(":")[0] if ":" in s else s[:2]
+    return int(s) if s.isdigit() else -1
+
+
+def _one(club: dict, date: str, tokens=None, min_hour=None) -> dict | None:
     seq = club.get("seq")
     if seq is None:
         return None
@@ -32,6 +40,9 @@ def _one(club: dict, date: str, tokens=None) -> dict | None:
     except Exception:
         return None
     df = df[df["green_fee"].notna()]
+    # 당일 야간 등: 특정 시각 이후 티타임만 대상으로 최저가 계산
+    if min_hour is not None and len(df):
+        df = df[df["time"].map(_hour) >= int(min_hour)]
     if not len(df):
         return None
     row = df.loc[df["green_fee"].idxmin()]
@@ -60,13 +71,14 @@ def _one(club: dict, date: str, tokens=None) -> dict | None:
 
 
 def scan_prices(clubs: list[dict], date: str, progress=None, max_workers: int = 32,
-                tokens=None) -> list[dict]:
-    """모든 골프장의 해당 날짜 최저가를 병렬로 수집. 티타임 없는 곳은 제외."""
+                tokens=None, min_hour=None) -> list[dict]:
+    """모든 골프장의 해당 날짜 최저가를 병렬로 수집. 티타임 없는 곳은 제외.
+    min_hour가 주어지면 그 시각 이후 티타임만(예: 당일 야간 16시 이후) 대상으로 계산."""
     results = []
     total = len(clubs)
     done = 0
     with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futs = [ex.submit(_one, c, date, tokens) for c in clubs]
+        futs = [ex.submit(_one, c, date, tokens, min_hour) for c in clubs]
         for fu in cf.as_completed(futs):
             try:
                 r = fu.result()
@@ -81,15 +93,16 @@ def scan_prices(clubs: list[dict], date: str, progress=None, max_workers: int = 
     return results
 
 
-def save(date: str, rows: list[dict]) -> None:
+def save(date: str, rows: list[dict], min_hour=None) -> None:
     try:
-        scan_file(date).write_text(json.dumps(rows, ensure_ascii=False, default=str), encoding="utf-8")
+        scan_file(date, min_hour).write_text(
+            json.dumps(rows, ensure_ascii=False, default=str), encoding="utf-8")
     except OSError:
         pass
 
 
-def load(date: str) -> list[dict]:
-    f = scan_file(date)
+def load(date: str, min_hour=None) -> list[dict]:
+    f = scan_file(date, min_hour)
     if f.exists():
         try:
             return json.loads(f.read_text(encoding="utf-8"))
