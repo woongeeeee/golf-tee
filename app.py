@@ -4,6 +4,7 @@ app.py  —  전국 골프장 티타임 통합검색 (티스캐너 스타일)
 """
 
 import calendar
+import concurrent.futures as cf
 import datetime as dt
 import html as _html
 import json
@@ -32,6 +33,8 @@ st.set_page_config(page_title="웅SCANNER · 전국 골프장 티타임",
 TODAY = dt.date.today()
 MONTH_RANGE_LABEL = f"{TODAY.month}~{TODAY.month % 12 + 1}월"  # 당월~다음월 (월 바뀌면 자동 변경)
 DEAL_LIMIT_PRICE = 70000  # 특가 기준 그린피(원)
+POPUP_PRICE_CAP = 60000   # 30일 특가 팝업 기준(그린피 6만원 이하)
+POPUP_DAYS = 30           # 오늘부터 며칠간의 특가를 모을지
 MAX_DATES = 45            # 성능 보호: 한 번에 생성/표시할 최대 날짜 수
 
 # 클릭 가능한 스타일 표(커스텀 컴포넌트) — 행 클릭 시 새로고침 없이 선택값을 반환
@@ -527,6 +530,40 @@ def ts_all_deals(date: str, tokens) -> pd.DataFrame:
     return alld.sort_values("min_cost").reset_index(drop=True)
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def ts_deals_range(start_iso: str, days: int, _tokens) -> pd.DataFrame:
+    """오늘(start)부터 days일간, 전 권역 실시간 특가를 병렬로 모아 반환(캐시 15분).
+    _tokens는 캐시 키에서 제외(누가 조회하든 같은 공개 특가 데이터라 공유 캐시)."""
+    start = dt.date.fromisoformat(start_iso)
+    dates = [(start + dt.timedelta(days=i)).isoformat() for i in range(days)]
+    tasks = [(d, kr, code) for d in dates for kr, code in ts.REGION_MAP.items()]
+
+    def _one(t):
+        d, kr, code = t
+        try:
+            df = ts.deals_dataframe(d, code, tokens=_tokens)
+        except Exception:
+            return None
+        if not len(df):
+            return None
+        df = df.copy()
+        df["date"] = d
+        df["region_kr"] = kr
+        return df
+
+    frames = []
+    with cf.ThreadPoolExecutor(max_workers=24) as ex:
+        for r in ex.map(_one, tasks):
+            if r is not None and len(r):
+                frames.append(r)
+    if not frames:
+        return pd.DataFrame()
+    alld = pd.concat(frames, ignore_index=True)
+    # 같은 골프장이 같은 날짜에 여러 권역으로 잡히면 최저가 1건만
+    alld = alld.sort_values("min_cost").drop_duplicates(["seq", "date"], keep="first")
+    return alld.reset_index(drop=True)
+
+
 @st.cache_data(ttl=180)
 def ts_cheapest_caddie(date: str, seq: int, tokens) -> str:
     """특가(추천)에는 캐디 필드가 없어, 해당 골프장 최저가 티타임의 캐디를 읽어옴(캐시 3분)."""
@@ -819,30 +856,88 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ============================ 특가 팝업 (접속 시 1회 + 다시 보기 버튼) ============================
-if USE_SCAN:
-    pop_deals = (scan_df[scan_df["min_cost"].notna()]
-                 .sort_values("min_cost").head(10).reset_index(drop=True))
-    reopen_label = "🔥 전국 최저가 다시 보기"
-elif USE_REAL:
-    pop_deals = (real_all[real_all["min_cost"].notna()]
-                 .sort_values("min_cost").head(10).reset_index(drop=True))
-    reopen_label = "🔥 전국 실시간 특가 다시 보기"
-else:
-    pop_deals = pd.DataFrame()
-    reopen_label = ""
+@st.fragment
+def deal_panel(deals30):
+    """오늘부터 30일 · 6만원 이하 특가 패널(지역 다중선택 + 닫기). fragment라 지역 바꿔도 빠름."""
+    allr = list(ts.REGION_MAP.keys())
+    with st.container(border=True):
+        hc = st.columns([6, 2.2, 1.6], vertical_alignment="center")
+        hc[0].markdown(f"#### 🔥 오늘부터 {POPUP_DAYS}일 특가 · 그린피 6만원 이하")
+        with hc[1]:
+            pk_prev = [r for r in allr if st.session_state.get(f"dealreg_{r}", True)]
+            lbl = ("🗺️ 지역 전체" if len(pk_prev) == len(allr)
+                   else (f"🗺️ 지역 {len(pk_prev)}곳" if pk_prev else "🗺️ 지역 선택"))
+            with st.popover(lbl, use_container_width=True):
+                b = st.columns(2)
+                if b[0].button("전체선택", key="dealreg_all", use_container_width=True):
+                    for r in allr:
+                        st.session_state[f"dealreg_{r}"] = True
+                if b[1].button("전체해제", key="dealreg_none", use_container_width=True):
+                    for r in allr:
+                        st.session_state[f"dealreg_{r}"] = False
+                with st.container(height=200):
+                    for r in allr:
+                        st.session_state.setdefault(f"dealreg_{r}", True)
+                        st.checkbox(r, key=f"dealreg_{r}")
+        with hc[2]:
+            if st.button("✕ 닫기", key="deal_close", use_container_width=True):
+                st.session_state.deal_open = False
+                st.rerun()
 
-if len(pop_deals):
-    rbc1, rbc2 = st.columns([1.8, 3])
-    with rbc1:
-        if st.button(reopen_label, type="primary", key="reopen_deals"):
-            st.session_state.show_popup_now = True
+        if not len(deals30):
+            st.info("오늘부터 30일간 6만원 이하 특가가 아직 없어요. (티스캐너 추천특가 기준)")
+        else:
+            pick = [r for r in allr if st.session_state.get(f"dealreg_{r}", True)]
+            dv = deals30
+            if not pick:
+                dv = dv.iloc[0:0]
+            elif len(pick) < len(allr):
+                dv = dv[dv["region_kr"].isin(pick)]
+            dv = dv.sort_values(["min_cost", "date"]).reset_index(drop=True)
+            if not len(dv):
+                st.info("선택한 지역에는 6만원 이하 특가가 없어요. 지역을 바꿔보세요.")
+            else:
+                st.caption(f"총 {len(dv):,}건 · 가격 낮은순 · 날짜·골프장·캐디 확인하고 예약하세요")
+                rows = []
+                for _, r in dv.head(80).iterrows():
+                    price = f"{int(r['min_cost']):,}원"
+                    cad = caddie_badge(str(r.get("caddie") or ""))
+                    url = booking_url(r.get("seq"), r["date"])
+                    rows.append(
+                        "<div class='deal-row'>"
+                        f"<div><div class='name'>{r['course']} "
+                        f"<span style='color:#7a8f80;font-weight:600'>· {r.get('region_kr','')}</span></div>"
+                        f"<div class='meta'>📅 {r['date']}</div></div>"
+                        "<div style='text-align:right;display:flex;align-items:center;gap:12px'>"
+                        f"{cad}<div class='pr'>{price}</div>"
+                        f"<a class='book-btn' href='{url}' target='_blank' rel='noopener'>예약</a></div></div>")
+                with st.container(height=430):
+                    st.markdown("".join(rows), unsafe_allow_html=True)
+                if len(dv) > 80:
+                    st.caption(f"※ 많아서 상위 80건만 표시 (총 {len(dv):,}건)")
+        if st.checkbox("오늘 하루 이 창 안 열기", key="deal_hide_today"):
+            dismiss_today()
+            st.session_state.deal_open = False
+            st.rerun()
 
-first_load = not st.session_state.get("popup_seen", False)
-if len(pop_deals) and ((first_load and not dismissed_today()) or st.session_state.get("show_popup_now", False)):
-    st.session_state.popup_seen = True
-    st.session_state.show_popup_now = False
-    deal_popup_real(pop_deals, real_date, USER_TOKENS)
+
+# ============================ 30일 특가 패널 (접속 시 표시 · 지역선택 · 닫기) ============================
+# 모달(팝업)이 초기 자동-리런과 부딪혀 깜빡이던 문제를 없애려고, 상단 특가 패널로 구현.
+if REAL:
+    if "deal_open" not in st.session_state:
+        st.session_state.deal_open = not dismissed_today()   # 최초 접속 시 자동으로 열림
+    _rb = st.columns([2.2, 5])
+    if _rb[0].button("🔥 30일 특가 다시 보기", type="primary", key="reopen_deals"):
+        st.session_state.deal_open = True
+    if st.session_state.deal_open:
+        with st.spinner("오늘부터 30일 특가(6만원 이하)를 모으는 중..."):
+            try:
+                _range = ts_deals_range(TODAY.isoformat(), POPUP_DAYS, USER_TOKENS)
+            except Exception:
+                _range = pd.DataFrame()
+        deals30 = (_range[_range["min_cost"].notna() & (_range["min_cost"] <= POPUP_PRICE_CAP)]
+                   if len(_range) else pd.DataFrame())
+        deal_panel(deals30)
 
 if date_capped:
     st.caption(f"⚡ 성능 보호를 위해 선택 기간 중 앞 {MAX_DATES}일만 불러왔습니다.")
