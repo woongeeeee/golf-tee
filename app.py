@@ -883,19 +883,37 @@ else:
 @st.fragment
 def _scan_results_body(scan_df, real_date, tokens, only_am, only_night, today_night=False):
     sdf = scan_df.copy()
-    regions_s = ["전체"] + sorted([x for x in sdf["region"].unique() if x])
-    hc1, hc2, hc3 = st.columns([3, 1.2, 1.3], vertical_alignment="bottom")
+    allregs = sorted([x for x in sdf["region"].unique() if x])
+    hc1, hc2, hc3 = st.columns([3, 1.4, 1.3], vertical_alignment="bottom")
     with hc1:
         squery = st_keyup("검색", placeholder="🔍 골프장 검색 (예: 이글밸리, CC)",
                           debounce=120, label_visibility="collapsed", key="scan_search")
     with hc2:
-        sreg = st.selectbox("지역", regions_s, label_visibility="collapsed", key="scan_region")
+        # 지역 다중선택(체크박스) — 체크된 지역만 아래 표에 나옴
+        picked_prev = [rg for rg in allregs if st.session_state.get(f"scanreg_{rg}", True)]
+        plabel = ("🗺️ 지역 전체" if len(picked_prev) == len(allregs)
+                  else (f"🗺️ 지역 {len(picked_prev)}곳" if picked_prev else "🗺️ 지역 선택"))
+        with st.popover(plabel, use_container_width=True):
+            bc1, bc2 = st.columns(2)
+            if bc1.button("전체선택", key="scanreg_all", use_container_width=True):
+                for rg in allregs:
+                    st.session_state[f"scanreg_{rg}"] = True
+            if bc2.button("전체해제", key="scanreg_none", use_container_width=True):
+                for rg in allregs:
+                    st.session_state[f"scanreg_{rg}"] = False
+            with st.container(height=210):
+                for rg in allregs:
+                    st.session_state.setdefault(f"scanreg_{rg}", True)
+                    st.checkbox(rg, key=f"scanreg_{rg}")
     with hc3:
         ssort = st.selectbox("정렬", ["가격 낮은순", "가격 높은순"],
                              label_visibility="collapsed", key="scan_sort")
+    picked_regs = [rg for rg in allregs if st.session_state.get(f"scanreg_{rg}", True)]
     sv = sdf
-    if sreg != "전체":
-        sv = sv[sv["region"] == sreg]
+    if not picked_regs:
+        sv = sv.iloc[0:0]
+    elif len(picked_regs) < len(allregs):
+        sv = sv[sv["region"].isin(picked_regs)]
     if squery:
         sv = sv[sv["course"].str.contains(squery.strip(), case=False, na=False)]
     caddie_pick = caddie_picks()
