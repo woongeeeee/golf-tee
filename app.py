@@ -227,6 +227,18 @@ section[data-testid="stSidebar"],
 .deal-row .pr { font-family:'Montserrat',sans-serif; font-size:20px; font-weight:800; color:#e0352b; }
 .tag-req { padding:3px 9px; border-radius:999px; font-size:11.5px; font-weight:800; color:#fff; }
 
+/* ---------- 특가 '팝업'(모달) : 일반 컨테이너를 화면 중앙 오버레이로 표시 ---------- */
+.deal-backdrop { position:fixed; inset:0; background:rgba(8,20,10,.5);
+    z-index:1000; backdrop-filter:blur(1.5px); }
+[data-testid="stVerticalBlockBorderWrapper"]:has(.deal-modal-anchor) {
+    position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+    z-index:1001; width:min(780px,94vw); max-height:88vh; overflow:auto;
+    background:#ffffff !important; border:1px solid #dcebd5 !important; border-radius:20px !important;
+    box-shadow:0 34px 90px -22px rgba(0,0,0,.55); padding:10px 16px 6px; }
+[data-testid="stVerticalBlockBorderWrapper"]:has(.deal-modal-anchor)::-webkit-scrollbar { width:8px; }
+[data-testid="stVerticalBlockBorderWrapper"]:has(.deal-modal-anchor)::-webkit-scrollbar-thumb {
+    background:#cfe3c6; border-radius:8px; }
+
 /* ---------- 로고 (웅SCANNER) - 그래피티 · 다채색 · 임팩트 ---------- */
 .logo-wrap { position:relative; padding:0 2px 16px; margin-bottom:8px; border-bottom:1px solid #d8e8d1;
     text-align:center; }
@@ -857,10 +869,13 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 @st.fragment
-def deal_panel(deals30):
-    """오늘부터 30일 · 6만원 이하 특가 패널(지역 다중선택 + 닫기). fragment라 지역 바꿔도 빠름."""
+def deal_panel(tokens, fallback):
+    """오늘부터 30일 · 6만원 이하 특가 패널(지역 다중선택 + 닫기).
+    패널 틀을 먼저 그리고, 데이터는 안에서 불러와서 '아예 안 뜨는' 문제를 방지."""
     allr = list(ts.REGION_MAP.keys())
+    st.markdown("<div class='deal-backdrop'></div>", unsafe_allow_html=True)
     with st.container(border=True):
+        st.markdown("<div class='deal-modal-anchor'></div>", unsafe_allow_html=True)
         hc = st.columns([6, 2.2, 1.6], vertical_alignment="center")
         hc[0].markdown(f"#### 🔥 오늘부터 {POPUP_DAYS}일 특가 · 그린피 6만원 이하")
         with hc[1]:
@@ -884,9 +899,28 @@ def deal_panel(deals30):
                 st.session_state.deal_open = False
                 st.rerun()
 
+        # 데이터: 오늘부터 30일 ≤6만원. 비면 오늘 특가(fallback)로 대체.
+        with st.spinner("특가 불러오는 중..."):
+            try:
+                rng = ts_deals_range(TODAY.isoformat(), POPUP_DAYS, tokens)
+            except Exception:
+                rng = pd.DataFrame()
+        # 0원(가격 미정)은 제외 — 실제 금액이 책정된 것만
+        deals30 = (rng[rng["min_cost"].notna() & (rng["min_cost"] > 0)
+                       & (rng["min_cost"] <= POPUP_PRICE_CAP)]
+                   if len(rng) else pd.DataFrame())
+        used_fallback = False
+        if not len(deals30) and fallback is not None and len(fallback):
+            deals30 = fallback[fallback["min_cost"].notna() & (fallback["min_cost"] > 0)
+                               & (fallback["min_cost"] <= POPUP_PRICE_CAP)]
+            used_fallback = True
+
         if not len(deals30):
-            st.info("오늘부터 30일간 6만원 이하 특가가 아직 없어요. (티스캐너 추천특가 기준)")
+            st.info("지금은 6만원 이하 특가 매물이 없어요. (티스캐너 추천특가 기준 · 날짜/지역에 따라 없을 수 있어요) "
+                    "잠시 뒤 **🔥 다시 보기**를 눌러보세요.")
         else:
+            if used_fallback:
+                st.caption("⚠️ 30일 특가 조회가 비어 있어 **오늘 기준 특가**로 보여드려요.")
             pick = [r for r in allr if st.session_state.get(f"dealreg_{r}", True)]
             dv = deals30
             if not pick:
@@ -930,14 +964,7 @@ if REAL:
     if _rb[0].button("🔥 30일 특가 다시 보기", type="primary", key="reopen_deals"):
         st.session_state.deal_open = True
     if st.session_state.deal_open:
-        with st.spinner("오늘부터 30일 특가(6만원 이하)를 모으는 중..."):
-            try:
-                _range = ts_deals_range(TODAY.isoformat(), POPUP_DAYS, USER_TOKENS)
-            except Exception:
-                _range = pd.DataFrame()
-        deals30 = (_range[_range["min_cost"].notna() & (_range["min_cost"] <= POPUP_PRICE_CAP)]
-                   if len(_range) else pd.DataFrame())
-        deal_panel(deals30)
+        deal_panel(USER_TOKENS, real_all)
 
 if date_capped:
     st.caption(f"⚡ 성능 보호를 위해 선택 기간 중 앞 {MAX_DATES}일만 불러왔습니다.")
