@@ -24,8 +24,10 @@ import teescanner as ts
 import catalog as CAT
 import scan as SCAN
 
+_ICON_LOCAL = str(Path(__file__).parent / "static" / "app-icon-192.png")
 st.set_page_config(page_title="웅SCANNER · 전국 골프장 티타임",
-                   page_icon="⛳", layout="wide", initial_sidebar_state="auto")
+                   page_icon=(_ICON_LOCAL if Path(_ICON_LOCAL).exists() else "⛳"),
+                   layout="wide", initial_sidebar_state="auto")
 
 TODAY = dt.date.today()
 MONTH_RANGE_LABEL = f"{TODAY.month}~{TODAY.month % 12 + 1}월"  # 당월~다음월 (월 바뀌면 자동 변경)
@@ -315,6 +317,47 @@ iframe[title="auth_store.auth_store"] { height:0 !important; display:block; marg
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
+
+# ---------- 홈 화면(앱) 아이콘: ⛳ 골프 아이콘을 iOS/안드로이드 '홈 화면에 추가' 아이콘으로 지정 ----------
+# (Streamlit 기본 아이콘 대신 static/의 골프 아이콘을 <head>에 주입. GitHub raw로 안정적인 절대주소 사용)
+_ICON_BASE = "https://raw.githubusercontent.com/woongeeeee/golf-tee/main/static/"
+_ICON_VER = "5"   # 아이콘 바꿀 때마다 숫자 올리면 폰이 새로 받아감(캐시 무력화)
+components.html(f"""
+<script>
+(function() {{
+  var base = "{_ICON_BASE}", V = "?v={_ICON_VER}", TITLE = "웅SCANNER";
+  function apply() {{
+    try {{
+      var doc = window.parent.document, head = doc.head;
+      // 1) Streamlit 기본 아이콘/매니페스트 제거
+      doc.querySelectorAll("link[rel='apple-touch-icon'],link[rel='apple-touch-icon-precomposed'],"
+        + "link[rel='icon'],link[rel='shortcut icon'],link[rel='manifest']").forEach(function(l){{ l.remove(); }});
+      // 2) 우리 골프 아이콘 주입
+      function addLink(rel, href, sizes) {{
+        var l = doc.createElement('link'); l.setAttribute('rel', rel); l.setAttribute('href', href);
+        if (sizes) l.setAttribute('sizes', sizes); head.appendChild(l);
+      }}
+      addLink('apple-touch-icon', base + 'apple-touch-icon.png' + V);
+      addLink('apple-touch-icon-precomposed', base + 'apple-touch-icon.png' + V);
+      addLink('icon', base + 'app-icon-192.png' + V, '192x192');
+      addLink('shortcut icon', base + 'app-icon-192.png' + V);
+      // 3) 홈 화면 이름/웹앱 메타
+      function setMeta(name, content) {{
+        var m = doc.querySelector("meta[name='" + name + "']");
+        if (!m) {{ m = doc.createElement('meta'); m.setAttribute('name', name); head.appendChild(m); }}
+        m.setAttribute('content', content);
+      }}
+      setMeta('apple-mobile-web-app-title', TITLE);
+      setMeta('application-name', TITLE);
+      setMeta('apple-mobile-web-app-capable', 'yes');
+    }} catch (e) {{}}
+  }}
+  apply();
+  // Streamlit이 나중에 자기 태그를 다시 넣을 수 있어 몇 번 더 덮어씀
+  var n = 0, t = setInterval(function() {{ apply(); if (++n > 12) clearInterval(t); }}, 500);
+}})();
+</script>
+""", height=0)
 
 CADDIE_COLORS = {"캐디": "#16A34A", "노캐디": "#64748B", "캐디선택가능": "#D97706"}
 CADDIE_OPTIONS = ["캐디", "노캐디", "캐디선택가능"]
