@@ -33,7 +33,7 @@ st.set_page_config(page_title="웅SCANNER · 전국 골프장 티타임",
 TODAY = dt.date.today()
 MONTH_RANGE_LABEL = f"{TODAY.month}~{TODAY.month % 12 + 1}월"  # 당월~다음월 (월 바뀌면 자동 변경)
 DEAL_LIMIT_PRICE = 70000  # 특가 기준 그린피(원)
-POPUP_PRICE_CAP = 60000   # 30일 특가 팝업 기준(그린피 6만원 이하)
+POPUP_PRICE_CAP = 50000   # 30일 특가 팝업 기준(그린피 5만원 이하)
 POPUP_DAYS = 30           # 오늘부터 며칠간의 특가를 모을지
 MAX_DATES = 45            # 성능 보호: 한 번에 생성/표시할 최대 날짜 수
 
@@ -437,6 +437,25 @@ def caddie_req(caddie: str) -> tuple[str, str]:
     return "캐디 필수", "#DC2626"
 
 
+def caddie_pill(raw: str) -> str:
+    """캐디 원문 → 캐디필수/노캐디/캐디선택가능 색상 배지(정보 없으면 회색)."""
+    cls = caddie_class(raw)
+    if not cls:
+        return "<span class='tag-req' style='background:#94a3b8'>캐디 확인</span>"
+    color = {"노캐디": "#16A34A", "캐디선택가능": "#D97706", "캐디필수": "#DC2626"}[cls]
+    return f"<span class='tag-req' style='background:{color}'>{cls}</span>"
+
+
+def holes_from_name(name: str) -> str:
+    """티타임 코스명(예: '9홀', '9홀X2 (18홀)', '가든(9홀)') → '18홀'/'9홀' 라벨."""
+    s = str(name or "")
+    if "18" in s:
+        return "18홀"
+    if "9" in s:
+        return "9홀"
+    return ""
+
+
 def holes_label(h: int) -> str:
     """홀수 표시 → 18홀 완주 기준 반복 표기. (9홀은 2회, 6홀은 3회 돌아 18홀)"""
     if h == 9:
@@ -567,6 +586,31 @@ def ts_deals_range(start_iso: str, days: int, _tokens) -> pd.DataFrame:
     # 같은 골프장이 같은 날짜에 여러 권역으로 잡히면 최저가 1건만
     alld = alld.sort_values("min_cost").drop_duplicates(["seq", "date"], keep="first")
     return alld.reset_index(drop=True)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def ts_deal_details(pairs, _tokens) -> dict:
+    """여러 (날짜, seq)의 '최저가 티타임'에서 캐디·홀 정보를 병렬로 수집.
+    반환: {(date, seq): (캐디원문, 코스명)}. 특가 팝업 목록에 캐디/홀 표시용."""
+    def _one(p):
+        d, seq = p
+        try:
+            df = ts.tee_times_dataframe(int(seq), d, tokens=_tokens)
+        except Exception:
+            return (p, "", "")
+        df = df[df["green_fee"].notna() & (df["green_fee"] > 0)]
+        if not len(df):
+            return (p, "", "")
+        row = df.loc[df["green_fee"].idxmin()]
+        return (p, str(row.get("caddie") or ""), str(row.get("course") or ""))
+
+    out = {}
+    if not pairs:
+        return out
+    with cf.ThreadPoolExecutor(max_workers=24) as ex:
+        for p, cad, cname in ex.map(_one, pairs):
+            out[p] = (cad, cname)
+    return out
 
 
 @st.cache_data(ttl=180)
@@ -863,12 +907,12 @@ st.markdown(f"""
 
 @st.fragment
 def deal_panel(tokens, fallback):
-    """오늘부터 30일 · 6만원 이하 특가 패널(지역 다중선택 + 닫기).
+    """오늘부터 30일 · 5만원 이하 특가 패널(지역 다중선택 + 닫기).
     패널 틀을 먼저 그리고, 데이터는 안에서 불러와서 '아예 안 뜨는' 문제를 방지."""
     allr = list(ts.REGION_MAP.keys())
     with st.container(border=True, key="deal_modal"):
         hc = st.columns([6, 2.2, 1.6], vertical_alignment="center")
-        hc[0].markdown(f"#### 🔥 오늘부터 {POPUP_DAYS}일 특가 · 그린피 6만원 이하")
+        hc[0].markdown(f"#### 🔥 오늘부터 {POPUP_DAYS}일 특가 · 그린피 5만원 이하")
         with hc[1]:
             pk_prev = [r for r in allr if st.session_state.get(f"dealreg_{r}", True)]
             lbl = ("🗺️ 지역 전체" if len(pk_prev) == len(allr)
@@ -890,7 +934,7 @@ def deal_panel(tokens, fallback):
                 st.session_state.deal_open = False
                 st.rerun()
 
-        # 데이터: 오늘부터 30일 ≤6만원. 비면 오늘 특가(fallback)로 대체.
+        # 데이터: 오늘부터 30일 ≤5만원. 비면 오늘 특가(fallback)로 대체.
         with st.spinner("특가 불러오는 중..."):
             try:
                 rng = ts_deals_range(TODAY.isoformat(), POPUP_DAYS, tokens)
@@ -907,11 +951,17 @@ def deal_panel(tokens, fallback):
             used_fallback = True
 
         if not len(deals30):
-            st.info("지금은 6만원 이하 특가 매물이 없어요. (티스캐너 추천특가 기준 · 날짜/지역에 따라 없을 수 있어요) "
+            st.info("지금은 5만원 이하 특가 매물이 없어요. (티스캐너 추천특가 기준 · 날짜/지역에 따라 없을 수 있어요) "
                     "잠시 뒤 **🔥 다시 보기**를 눌러보세요.")
         else:
             if used_fallback:
                 st.caption("⚠️ 30일 특가 조회가 비어 있어 **오늘 기준 특가**로 보여드려요.")
+            # 캐디·홀 정보는 전체 특가(가격순 상위 120)에서 한 번만 병렬 수집 → 지역 바꿔도 빠름
+            base = deals30.sort_values("min_cost").head(120)
+            pairs = tuple((r["date"], int(r["seq"])) for _, r in base.iterrows()
+                          if pd.notna(r.get("seq")))
+            with st.spinner("캐디·홀 정보 확인 중..."):
+                details = ts_deal_details(pairs, tokens)
             pick = [r for r in allr if st.session_state.get(f"dealreg_{r}", True)]
             dv = deals30
             if not pick:
@@ -920,20 +970,25 @@ def deal_panel(tokens, fallback):
                 dv = dv[dv["region_kr"].isin(pick)]
             dv = dv.sort_values(["min_cost", "date"]).reset_index(drop=True)
             if not len(dv):
-                st.info("선택한 지역에는 6만원 이하 특가가 없어요. 지역을 바꿔보세요.")
+                st.info("선택한 지역에는 5만원 이하 특가가 없어요. 지역을 바꿔보세요.")
             else:
-                st.caption(f"총 {len(dv):,}건 · 가격 낮은순 · 날짜·골프장·캐디 확인하고 예약하세요")
+                st.caption(f"총 {len(dv):,}건 · 가격 낮은순 · 캐디 여부·홀수 확인하고 예약하세요")
                 rows = []
                 for _, r in dv.head(80).iterrows():
                     price = f"{int(r['min_cost']):,}원"
-                    cad = caddie_badge(str(r.get("caddie") or ""))
+                    key = (r["date"], int(r["seq"])) if pd.notna(r.get("seq")) else None
+                    cad_raw, cname = details.get(key, ("", "")) if key else ("", "")
+                    cad = caddie_pill(cad_raw)
+                    holes = holes_from_name(cname)
+                    holes_html = (f"<span style='color:#2b6b3f;font-weight:800'>· {holes} 기준</span>"
+                                  if holes else "")
                     url = booking_url(r.get("seq"), r["date"])
                     rows.append(
                         "<div class='deal-row'>"
                         f"<div><div class='name'>{r['course']} "
                         f"<span style='color:#7a8f80;font-weight:600'>· {r.get('region_kr','')}</span></div>"
-                        f"<div class='meta'>📅 {r['date']}</div></div>"
-                        "<div style='text-align:right;display:flex;align-items:center;gap:12px'>"
+                        f"<div class='meta'>📅 {r['date']}  {holes_html}</div></div>"
+                        "<div style='text-align:right;display:flex;align-items:center;gap:10px'>"
                         f"{cad}<div class='pr'>{price}</div>"
                         f"<a class='book-btn' href='{url}' target='_blank' rel='noopener'>예약</a></div></div>")
                 with st.container(height=430):
