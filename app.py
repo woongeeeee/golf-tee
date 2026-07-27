@@ -227,17 +227,10 @@ section[data-testid="stSidebar"],
 .deal-row .pr { font-family:'Montserrat',sans-serif; font-size:20px; font-weight:800; color:#e0352b; }
 .tag-req { padding:3px 9px; border-radius:999px; font-size:11.5px; font-weight:800; color:#fff; }
 
-/* ---------- 특가 '팝업'(모달) : 일반 컨테이너를 화면 중앙 오버레이로 표시 ---------- */
-.deal-backdrop { position:fixed; inset:0; background:rgba(8,20,10,.5);
-    z-index:1000; backdrop-filter:blur(1.5px); }
-[data-testid="stVerticalBlockBorderWrapper"]:has(.deal-modal-anchor) {
-    position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
-    z-index:1001; width:min(780px,94vw); max-height:88vh; overflow:auto;
-    background:#ffffff !important; border:1px solid #dcebd5 !important; border-radius:20px !important;
-    box-shadow:0 34px 90px -22px rgba(0,0,0,.55); padding:10px 16px 6px; }
-[data-testid="stVerticalBlockBorderWrapper"]:has(.deal-modal-anchor)::-webkit-scrollbar { width:8px; }
-[data-testid="stVerticalBlockBorderWrapper"]:has(.deal-modal-anchor)::-webkit-scrollbar-thumb {
-    background:#cfe3c6; border-radius:8px; }
+/* ---------- 특가 패널 강조(중앙 카드 느낌) ---------- */
+.st-key-deal_modal {
+    border:2px solid #16A34A !important; border-radius:20px !important;
+    background:#ffffff !important; box-shadow:0 24px 60px -26px rgba(20,90,50,.55) !important; }
 
 /* ---------- 로고 (웅SCANNER) - 그래피티 · 다채색 · 임팩트 ---------- */
 .logo-wrap { position:relative; padding:0 2px 16px; margin-bottom:8px; border-bottom:1px solid #d8e8d1;
@@ -873,9 +866,7 @@ def deal_panel(tokens, fallback):
     """오늘부터 30일 · 6만원 이하 특가 패널(지역 다중선택 + 닫기).
     패널 틀을 먼저 그리고, 데이터는 안에서 불러와서 '아예 안 뜨는' 문제를 방지."""
     allr = list(ts.REGION_MAP.keys())
-    st.markdown("<div class='deal-backdrop'></div>", unsafe_allow_html=True)
-    with st.container(border=True):
-        st.markdown("<div class='deal-modal-anchor'></div>", unsafe_allow_html=True)
+    with st.container(border=True, key="deal_modal"):
         hc = st.columns([6, 2.2, 1.6], vertical_alignment="center")
         hc[0].markdown(f"#### 🔥 오늘부터 {POPUP_DAYS}일 특가 · 그린피 6만원 이하")
         with hc[1]:
