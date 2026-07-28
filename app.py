@@ -944,7 +944,7 @@ def deal_panel(tokens, fallback):
     allr = list(ts.REGION_MAP.keys())
     with st.container(border=True, key="deal_modal"):
         hc = st.columns([6, 2.2, 1.6], vertical_alignment="center")
-        hc[0].markdown(f"#### 🔥 오늘부터 {POPUP_DAYS}일 특가 · 18홀 기준 6만원 이하")
+        hc[0].markdown(f"#### 🔥 오늘부터 {POPUP_DAYS}일 특가 · 실제 18홀 6만원 이하")
         with hc[1]:
             if "dealreg_applied" not in st.session_state:
                 st.session_state.dealreg_applied = list(allr)
@@ -1014,21 +1014,14 @@ def deal_panel(tokens, fallback):
                 if not info:
                     continue
                 best, cad = info["best"], info["cad"]
-                if best[18] is not None:
-                    price18, basis, caddie, hp = best[18], "18홀", cad[18], 18
-                    raw = best[18]
-                elif best[9] is not None:
-                    price18, basis, caddie, hp = best[9] * 2, "9홀×2라운드", cad[9], 9
-                    raw = best[9]
-                elif best[6] is not None:
-                    price18, basis, caddie, hp = best[6] * 3, "6홀×3라운드", cad[6], 6
-                    raw = best[6]
-                else:
+                # 진짜 18홀 단일 라운드 티타임이 있는 곳만(예약페이지 실금액)
+                if best[18] is None:
                     continue
+                price18, caddie, hp = best[18], cad[18], 18
                 if price18 <= POPUP_PRICE_CAP:
                     recs.append({"course": r["course"], "region_kr": r.get("region_kr", ""),
                                  "date": r["date"], "seq": int(r["seq"]), "hp": hp,
-                                 "price18": price18, "raw": raw, "basis": basis, "caddie": caddie})
+                                 "price18": price18, "raw": price18, "basis": "18홀", "caddie": caddie})
             final = pd.DataFrame(recs)
 
             pick = applied_d
@@ -1042,8 +1035,8 @@ def deal_panel(tokens, fallback):
             if not len(dv):
                 st.info("선택한 지역에는 18홀 기준 6만원 이하 특가가 없어요. 지역을 바꿔보세요.")
             else:
-                st.caption(f"총 {len(dv):,}건 · 18홀 기준 가격 낮은순 "
-                           "(실제 18홀 라운드 금액 · 순수 9·6홀 코스는 2·3라운드 실결제 금액)")
+                st.caption(f"총 {len(dv):,}건 · **18홀 실제 예약 금액** · 가격 낮은순 "
+                           "(진짜 18홀 티타임 있는 곳만)")
                 rows = []
                 for _, r in dv.head(80).iterrows():
                     cad = caddie_pill(str(r["caddie"]))
@@ -1125,6 +1118,10 @@ else:
 @st.fragment
 def _scan_results_body(scan_df, real_date, tokens, only_am, only_pm, only_night, today_night=False):
     sdf = scan_df.copy()
+    scan_is_v2 = "hp" in sdf.columns   # 18홀 기준 스캔이면 hp 컬럼이 있음
+    if not scan_is_v2:
+        st.warning("⚠️ 예전 방식 스캔 데이터예요(원가 기준). 아래 **⚡ 전국 최저가 스캔**을 다시 눌러 "
+                   "**18홀 기준 실제 금액**으로 갱신하세요. (scan.py 최신본이 올라가 있어야 해요)")
     allregs = sorted([x for x in sdf["region"].unique() if x])
     hc1, hc2, hc3 = st.columns([3, 1.4, 1.3], vertical_alignment="bottom")
     with hc1:
@@ -1172,7 +1169,7 @@ def _scan_results_body(scan_df, real_date, tokens, only_am, only_pm, only_night,
     if not len(sv):
         st.info("조건에 맞는 골프장이 없어요. 지역이나 검색어를 바꿔보세요.")
         return
-    st.caption(f"전국 {len(sv):,}곳 · **18홀 기준 실제 금액**(9·6홀 코스는 2·3라운드) · "
+    st.caption(f"전국 {len(sv):,}곳 · **18홀 실제 예약 금액**(진짜 18홀 티타임 있는 곳만) · "
                "행을 클릭하면 하단에 티타임 상세가 나와요.")
     has_cname = "course_name" in sv.columns
     best_price = sdf["min_cost"].min()

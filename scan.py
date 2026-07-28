@@ -18,7 +18,7 @@ import teescanner as ts
 import catalog as CAT
 
 HERE = Path(__file__).parent
-SCAN_VER = "v2"   # 18홀 기준 산정으로 바뀜 → 옛 캐시(원가 기준)와 파일명 분리
+SCAN_VER = "v3"   # 진짜 18홀 단일 티타임 실제금액만 → 이전 캐시와 파일명 분리
 
 
 def scan_file(date: str, min_hour=None) -> Path:
@@ -62,28 +62,23 @@ def _one(club: dict, date: str, tokens=None, min_hour=None) -> dict | None:
     if not len(df):
         return None
 
-    # 18홀 기준 실제 최저가: 진짜 18홀 라운드 우선, 없으면 순수 9홀×2 / 6홀×3
-    best = {18: None, 9: None, 6: None}
-    meta = {18: None, 9: None, 6: None}   # (caddie, course_name, time)
+    # 진짜 18홀 단일 라운드 티타임의 '실제 최저가'만 사용(예약페이지 실금액).
+    # 순수 9홀/6홀 등 18홀 단일 라운드가 없는 곳은 제외.
+    best18 = None
+    meta18 = None   # (caddie, course_name, time)
     for _, r in df.iterrows():
         hp = _holes(r.get("course"))
         if hp is None:
-            hp = 18
-        if hp not in (18, 9, 6):
-            continue
+            hp = 18                        # 홀 표기 없으면 18홀 라운드로 간주
+        if hp != 18:
+            continue                       # 9홀·6홀·12홀 등은 대상 아님
         gf = int(r["green_fee"])
-        if best[hp] is None or gf < best[hp]:
-            best[hp] = gf
-            meta[hp] = (str(r.get("caddie") or ""), str(r.get("course") or ""), str(r.get("time") or ""))
-    if best[18] is not None:
-        price18, hp, rounds = best[18], 18, 1
-    elif best[9] is not None:
-        price18, hp, rounds = best[9] * 2, 9, 2
-    elif best[6] is not None:
-        price18, hp, rounds = best[6] * 3, 6, 3
-    else:
-        return None                        # 18홀로 만들 수 없는 곳(6홀X2 등)은 제외
-    cad, cname, ttime = meta[hp]
+        if best18 is None or gf < best18:
+            best18 = gf
+            meta18 = (str(r.get("caddie") or ""), str(r.get("course") or ""), str(r.get("time") or ""))
+    if best18 is None:
+        return None
+    cad, cname, ttime = meta18
 
     score = club.get("score")
     try:
@@ -97,10 +92,10 @@ def _one(club: dict, date: str, tokens=None, min_hour=None) -> dict | None:
         "region": CAT.top_region(club.get("area", "")),
         "address": str(club.get("address", "")),
         "score": score,
-        "min_cost": int(price18),          # 18홀 기준 실제 금액
-        "raw": int(best[hp]),              # 1라운드 실제가
-        "hp": hp,                          # 18 / 9 / 6
-        "rounds": rounds,                  # 18홀 만들려는 라운드 수(1/2/3)
+        "min_cost": int(best18),           # 18홀 단일 라운드 실제 금액
+        "raw": int(best18),
+        "hp": 18,
+        "rounds": 1,
         "caddie": cad,
         "course_name": cname,
         "time": ttime,
