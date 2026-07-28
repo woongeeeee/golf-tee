@@ -648,22 +648,26 @@ def ts_cheapest_caddie(date: str, seq: int, tokens) -> str:
     return str(row.get("caddie") or "")
 
 
-def filter_tee_times(ttdf: pd.DataFrame, am: bool, night: bool, night_hour: int = 17) -> pd.DataFrame:
-    """실제 티타임 표에 오전(12시 이전)·야간(기본 17시 이후) 필터 적용.
-    night_hour로 야간 기준 시각을 바꿀 수 있음(당일 야간은 16시)."""
-    if not len(ttdf) or not (am or night):
+def filter_tee_times(ttdf: pd.DataFrame, am: bool = False, pm: bool = False,
+                     night: bool = False, night_hour: int = 17) -> pd.DataFrame:
+    """실제 티타임 표에 시간대 필터(합집합) 적용.
+    오전=12시 이전(~11:59), 오후=12~17시 미만(~16:59), 야간=night_hour 이후(기본 17시, 당일야간 16시).
+    아무것도 안 켜면 전체."""
+    if not len(ttdf) or not (am or pm or night):
         return ttdf
     def _hr(t):
         s = str(t).strip()
         s = s.split(":")[0] if ":" in s else s[:2]
         return int(s) if s.isdigit() else -1
     h = ttdf["time"].map(_hr)
-    out = ttdf
+    mask = pd.Series(False, index=ttdf.index)
     if am:
-        out = out[h < 12]
+        mask |= (h >= 0) & (h < 12)
+    if pm:
+        mask |= (h >= 12) & (h < 17)
     if night:
-        out = out[h >= night_hour]
-    return out.reset_index(drop=True)
+        mask |= (h >= night_hour)
+    return ttdf[mask].reset_index(drop=True)
 
 
 def tee_time_table_html(ttdf: pd.DataFrame, seq=None, date: str = "") -> str:
@@ -866,6 +870,7 @@ date_capped = len(target_dates) > MAX_DATES
 if date_capped:
     target_dates = target_dates[:MAX_DATES]
 only_am = st.session_state.get("only_am", False)
+only_pm = st.session_state.get("only_pm", False)
 only_night = st.session_state.get("only_night", False)
 caddie_sel = caddie_picks()
 
@@ -879,10 +884,16 @@ f = df.copy()
 if region != "전체":
     f = f[f["region"] == region]
 f = f[f["caddie"].isin(caddie_opt)]
-if only_am and len(f):
-    f = f[f["tee_time"].str.slice(0, 2).astype(int) < 12]
-if only_night and len(f):
-    f = f[f["tee_time"].str.slice(0, 2).astype(int) >= 17]
+if (only_am or only_pm or only_night) and len(f):
+    _hh = f["tee_time"].str.slice(0, 2).astype(int)
+    _m = pd.Series(False, index=f.index)
+    if only_am:
+        _m |= (_hh < 12)
+    if only_pm:
+        _m |= (_hh >= 12) & (_hh < 17)
+    if only_night:
+        _m |= (_hh >= 17)
+    f = f[_m]
 f = f.reset_index(drop=True)
 
 # ============================ 실시간(티스캐너) 데이터 ============================
@@ -935,9 +946,11 @@ def deal_panel(tokens, fallback):
         hc = st.columns([6, 2.2, 1.6], vertical_alignment="center")
         hc[0].markdown(f"#### 🔥 오늘부터 {POPUP_DAYS}일 특가 · 18홀 기준 6만원 이하")
         with hc[1]:
-            pk_prev = [r for r in allr if st.session_state.get(f"dealreg_{r}", True)]
-            lbl = ("🗺️ 지역 전체" if len(pk_prev) == len(allr)
-                   else (f"🗺️ 지역 {len(pk_prev)}곳" if pk_prev else "🗺️ 지역 선택"))
+            if "dealreg_applied" not in st.session_state:
+                st.session_state.dealreg_applied = list(allr)
+            applied_d = [r for r in allr if r in st.session_state.dealreg_applied]
+            lbl = ("🗺️ 지역 전체" if len(applied_d) == len(allr)
+                   else (f"🗺️ 지역 {len(applied_d)}곳" if applied_d else "🗺️ 지역 선택"))
             with st.popover(lbl, use_container_width=True):
                 b = st.columns(2)
                 if b[0].button("전체선택", key="dealreg_all", use_container_width=True):
@@ -946,10 +959,14 @@ def deal_panel(tokens, fallback):
                 if b[1].button("전체해제", key="dealreg_none", use_container_width=True):
                     for r in allr:
                         st.session_state[f"dealreg_{r}"] = False
-                with st.container(height=200):
+                with st.container(height=190):
                     for r in allr:
-                        st.session_state.setdefault(f"dealreg_{r}", True)
+                        st.session_state.setdefault(f"dealreg_{r}", r in st.session_state.dealreg_applied)
                         st.checkbox(r, key=f"dealreg_{r}")
+                if st.button("🔍 검색", key="dealreg_apply", type="primary", use_container_width=True):
+                    st.session_state.dealreg_applied = [r for r in allr
+                                                        if st.session_state.get(f"dealreg_{r}", True)]
+                    st.rerun(scope="fragment")
         with hc[2]:
             if st.button("✕ 닫기", key="deal_close", use_container_width=True):
                 st.session_state.deal_open = False
@@ -1014,7 +1031,7 @@ def deal_panel(tokens, fallback):
                                  "price18": price18, "raw": raw, "basis": basis, "caddie": caddie})
             final = pd.DataFrame(recs)
 
-            pick = [r for r in allr if st.session_state.get(f"dealreg_{r}", True)]
+            pick = applied_d
             dv = final
             if len(final):
                 if not pick:
@@ -1106,7 +1123,7 @@ else:
 # 검색 응답속도 개선: 지도·날씨 탭과 전국최저가 표는 st.fragment로 감싸 '그 부분만' 다시 그리게 함
 # (검색어를 한 글자 칠 때마다 앱 전체가 아니라 이 함수만 재실행됨)
 @st.fragment
-def _scan_results_body(scan_df, real_date, tokens, only_am, only_night, today_night=False):
+def _scan_results_body(scan_df, real_date, tokens, only_am, only_pm, only_night, today_night=False):
     sdf = scan_df.copy()
     allregs = sorted([x for x in sdf["region"].unique() if x])
     hc1, hc2, hc3 = st.columns([3, 1.4, 1.3], vertical_alignment="bottom")
@@ -1114,10 +1131,12 @@ def _scan_results_body(scan_df, real_date, tokens, only_am, only_night, today_ni
         squery = st_keyup("검색", placeholder="🔍 골프장 검색 (예: 이글밸리, CC)",
                           debounce=120, label_visibility="collapsed", key="scan_search")
     with hc2:
-        # 지역 다중선택(체크박스) — 체크된 지역만 아래 표에 나옴
-        picked_prev = [rg for rg in allregs if st.session_state.get(f"scanreg_{rg}", True)]
-        plabel = ("🗺️ 지역 전체" if len(picked_prev) == len(allregs)
-                  else (f"🗺️ 지역 {len(picked_prev)}곳" if picked_prev else "🗺️ 지역 선택"))
+        # 지역 다중선택: 체크박스로 고른 뒤 '검색' 버튼을 눌러야 표에 적용됨
+        if "scanreg_applied" not in st.session_state:
+            st.session_state.scanreg_applied = list(allregs)   # 기본 전체
+        applied = [rg for rg in allregs if rg in st.session_state.scanreg_applied]
+        plabel = ("🗺️ 지역 전체" if len(applied) == len(allregs)
+                  else (f"🗺️ 지역 {len(applied)}곳" if applied else "🗺️ 지역 선택"))
         with st.popover(plabel, use_container_width=True):
             bc1, bc2 = st.columns(2)
             if bc1.button("전체선택", key="scanreg_all", use_container_width=True):
@@ -1126,14 +1145,18 @@ def _scan_results_body(scan_df, real_date, tokens, only_am, only_night, today_ni
             if bc2.button("전체해제", key="scanreg_none", use_container_width=True):
                 for rg in allregs:
                     st.session_state[f"scanreg_{rg}"] = False
-            with st.container(height=210):
+            with st.container(height=190):
                 for rg in allregs:
-                    st.session_state.setdefault(f"scanreg_{rg}", True)
+                    st.session_state.setdefault(f"scanreg_{rg}", rg in st.session_state.scanreg_applied)
                     st.checkbox(rg, key=f"scanreg_{rg}")
+            if st.button("🔍 검색", key="scanreg_apply", type="primary", use_container_width=True):
+                st.session_state.scanreg_applied = [rg for rg in allregs
+                                                    if st.session_state.get(f"scanreg_{rg}", True)]
+                st.rerun(scope="fragment")
     with hc3:
         ssort = st.selectbox("정렬", ["가격 낮은순", "가격 높은순"],
                              label_visibility="collapsed", key="scan_sort")
-    picked_regs = [rg for rg in allregs if st.session_state.get(f"scanreg_{rg}", True)]
+    picked_regs = applied
     sv = sdf
     if not picked_regs:
         sv = sv.iloc[0:0]
@@ -1190,9 +1213,9 @@ def _scan_results_body(scan_df, real_date, tokens, only_am, only_night, today_ni
     try:
         ttdf = ts_tee_times(real_date, int(sel["seq"]), tokens)
         if today_night:
-            ttdf = filter_tee_times(ttdf, False, True, night_hour=16)
+            ttdf = filter_tee_times(ttdf, night=True, night_hour=16)
         else:
-            ttdf = filter_tee_times(ttdf, only_am, only_night)
+            ttdf = filter_tee_times(ttdf, am=only_am, pm=only_pm, night=only_night)
         if len(ttdf):
             st.caption(f"✅ {detail_course} · {real_date} · 티타임 {len(ttdf)}개 (시간순)")
             st.markdown(tee_time_table_html(ttdf, sel["seq"], real_date), unsafe_allow_html=True)
@@ -1366,14 +1389,17 @@ with tab1:
                     ycol.selectbox("연도", years, format_func=lambda y: f"{y}년", key="scan_year")
                     mcol.selectbox("월", ["전체"] + [f"{m}월" for m in range(1, 13)], key="scan_month")
             st.markdown("**옵션 선택** — 원하는 항목만 체크하세요")
-            o1, o2, o3, o4, o5 = st.columns(5)
-            o1.checkbox("오전만", value=False, key="only_am", help="12시 이전 티타임만",
-                        disabled=TODAY_NIGHT)
-            o2.checkbox("야간만", value=False, key="only_night", help="17시 이후 티타임만",
-                        disabled=TODAY_NIGHT)
-            o3.checkbox("캐디필수", value=True, key="cad_req")
-            o4.checkbox("노캐디", value=True, key="cad_no")
-            o5.checkbox("캐디선택가능", value=True, key="cad_sel")
+            tc1, tc2, tc3 = st.columns(3)
+            tc1.checkbox("오전만", value=False, key="only_am", help="~11:59",
+                         disabled=TODAY_NIGHT)
+            tc2.checkbox("오후만", value=False, key="only_pm", help="12:00~16:59",
+                         disabled=TODAY_NIGHT)
+            tc3.checkbox("야간만", value=False, key="only_night", help="17:00~",
+                         disabled=TODAY_NIGHT)
+            cc1, cc2, cc3 = st.columns(3)
+            cc1.checkbox("캐디필수", value=True, key="cad_req")
+            cc2.checkbox("노캐디", value=True, key="cad_no")
+            cc3.checkbox("캐디선택가능", value=True, key="cad_sel")
             st.caption("👇 아래 버튼을 누르면 위 설정으로 전국 최저가를 검색해요")
             scan_label = (f"🌙 오늘 야간(16시↑) 최저가 스캔" if TODAY_NIGHT
                           else f"⚡ {real_date} 전국 최저가 스캔")
@@ -1402,7 +1428,7 @@ with tab1:
             st.rerun()
 
         if USE_SCAN:
-            _scan_results_body(scan_df, real_date, USER_TOKENS, only_am, only_night, TODAY_NIGHT)
+            _scan_results_body(scan_df, real_date, USER_TOKENS, only_am, only_pm, only_night, TODAY_NIGHT)
 
         elif USE_REAL:
             st.info("아직 이 날짜의 전국 최저가 스캔이 없어요. 위 **⚡ 전국 최저가 스캔**을 누르면 "
@@ -1489,7 +1515,7 @@ with tab1:
                     st.caption(f"📍 {sel['address']}")
                 try:
                     cttdf = ts_tee_times(real_date, int(sel["seq"]), USER_TOKENS)
-                    cttdf = filter_tee_times(cttdf, only_am, only_night)
+                    cttdf = filter_tee_times(cttdf, am=only_am, pm=only_pm, night=only_night)
                     if len(cttdf):
                         st.caption(f"✅ {sel['course']} · {real_date} · 티타임 {len(cttdf)}개 (시간순)")
                         st.markdown(tee_time_table_html(cttdf, sel["seq"], real_date), unsafe_allow_html=True)
@@ -1561,7 +1587,7 @@ with tab4:
                         st.caption(f"📍 {sel['address']}")
                     try:
                         sttdf = ts_tee_times(search_date.isoformat(), int(sel["seq"]), USER_TOKENS)
-                        sttdf = filter_tee_times(sttdf, only_am, only_night)
+                        sttdf = filter_tee_times(sttdf, am=only_am, pm=only_pm, night=only_night)
                         if len(sttdf):
                             st.caption(f"✅ {sel['course']} · {search_date.isoformat()} · 티타임 {len(sttdf)}개 (시간순)")
                             st.markdown(tee_time_table_html(sttdf, sel["seq"], search_date.isoformat()),
