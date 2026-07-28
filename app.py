@@ -8,6 +8,7 @@ import concurrent.futures as cf
 import datetime as dt
 import html as _html
 import json
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -446,14 +447,20 @@ def caddie_pill(raw: str) -> str:
     return f"<span class='tag-req' style='background:{color}'>{cls}</span>"
 
 
-def holes_from_name(name: str) -> str:
-    """티타임 코스명(예: '9홀', '9홀X2 (18홀)', '가든(9홀)') → '18홀'/'9홀' 라벨."""
-    s = str(name or "")
-    if "18" in s:
-        return "18홀"
-    if "9" in s:
-        return "9홀"
-    return ""
+def holes_played(name: str):
+    """티타임 코스명 → 그 요금이 실제로 커버하는 홀 수.
+    예) '9홀X2 (18홀)'→18, 'FOREST(6홀X2회/노캐디)'→12, '가든(9홀)'→9, 'HILL(18홀/캐디)'→18.
+    홀 표기가 없으면(예: 'Mountain') None → 18홀로 간주."""
+    s = str(name or "").upper().replace("×", "X").replace("회", "").replace(" ", "")
+    if "18홀" in s:
+        return 18
+    m = re.search(r'(\d+)홀(?:X(\d+))?', s)
+    if not m:
+        return None
+    base = int(m.group(1))
+    mult = int(m.group(2)) if m.group(2) else 1
+    n = base * mult
+    return n if n > 0 else None
 
 
 def holes_label(h: int) -> str:
@@ -590,26 +597,40 @@ def ts_deals_range(start_iso: str, days: int, _tokens) -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def ts_deal_details(pairs, _tokens) -> dict:
-    """여러 (날짜, seq)의 '최저가 티타임'에서 캐디·홀 정보를 병렬로 수집.
-    반환: {(date, seq): (캐디원문, 코스명)}. 특가 팝업 목록에 캐디/홀 표시용."""
+    """여러 (날짜, seq)의 실제 티타임을 조회해 홀수별 '실제 최저 그린피'를 수집.
+    반환: {(date, seq): {"best": {18:가격|None, 9:.., 6:..}, "cad": {18:캐디, 9:.., 6:..}}}.
+    18홀 라운드는 홀수=18(18홀·9홀X2·6홀X3), 순수 9홀/6홀은 각각 9/6로 분류."""
     def _one(p):
         d, seq = p
         try:
             df = ts.tee_times_dataframe(int(seq), d, tokens=_tokens)
         except Exception:
-            return (p, "", "")
+            return (p, None)
         df = df[df["green_fee"].notna() & (df["green_fee"] > 0)]
         if not len(df):
-            return (p, "", "")
-        row = df.loc[df["green_fee"].idxmin()]
-        return (p, str(row.get("caddie") or ""), str(row.get("course") or ""))
+            return (p, None)
+        best = {18: None, 9: None, 6: None}
+        cad = {18: "", 9: "", 6: ""}
+        for _, row in df.iterrows():
+            hp = holes_played(row.get("course"))
+            if hp is None:
+                hp = 18                      # 홀 표기 없으면 18홀 라운드로 간주
+            if hp not in (18, 9, 6):
+                continue                     # 12홀(6홀X2) 등 어중간한 건 18홀 산정 대상 아님
+            gf = int(row["green_fee"])
+            if best[hp] is None or gf < best[hp]:
+                best[hp] = gf
+                cad[hp] = str(row.get("caddie") or "")
+        if best[18] is None and best[9] is None and best[6] is None:
+            return (p, None)
+        return (p, {"best": best, "cad": cad})
 
     out = {}
     if not pairs:
         return out
     with cf.ThreadPoolExecutor(max_workers=24) as ex:
-        for p, cad, cname in ex.map(_one, pairs):
-            out[p] = (cad, cname)
+        for p, info in ex.map(_one, pairs):
+            out[p] = info
     return out
 
 
@@ -963,23 +984,34 @@ def deal_panel(tokens, fallback):
             with st.spinner("캐디·홀 정보 확인 중..."):
                 details = ts_deal_details(pairs, tokens)
 
-            # 18홀 기준 가격 계산: 9홀은 x2, 18홀/미상은 그대로. 18홀 기준 6만원 이하만.
+            # 실제 18홀 금액 산정:
+            #  - 진짜 18홀 라운드 티타임이 있으면 그 실제 최저가
+            #  - 없고 순수 9홀만 있으면 9홀 최저가 × 2 (18홀 = 2라운드 실결제)
+            #  - 없고 순수 6홀만 있으면 6홀 최저가 × 3 (18홀 = 3라운드 실결제)
             recs = []
             for _, r in base.iterrows():
                 if pd.isna(r.get("seq")):
                     continue
                 key = (r["date"], int(r["seq"]))
-                cad_raw, cname = details.get(key, ("", ""))
-                holes = holes_from_name(cname)
-                raw = int(r["min_cost"])
-                if holes == "9홀":
-                    price18, basis = raw * 2, "9홀×2"
+                info = details.get(key)
+                if not info:
+                    continue
+                best, cad = info["best"], info["cad"]
+                if best[18] is not None:
+                    price18, basis, caddie, hp = best[18], "18홀", cad[18], 18
+                    raw = best[18]
+                elif best[9] is not None:
+                    price18, basis, caddie, hp = best[9] * 2, "9홀×2라운드", cad[9], 9
+                    raw = best[9]
+                elif best[6] is not None:
+                    price18, basis, caddie, hp = best[6] * 3, "6홀×3라운드", cad[6], 6
+                    raw = best[6]
                 else:
-                    price18, basis = raw, "18홀"    # 18홀 또는 미상은 그대로(18홀 기준)
+                    continue
                 if price18 <= POPUP_PRICE_CAP:
                     recs.append({"course": r["course"], "region_kr": r.get("region_kr", ""),
-                                 "date": r["date"], "seq": int(r["seq"]),
-                                 "price18": price18, "raw": raw, "basis": basis, "caddie": cad_raw})
+                                 "date": r["date"], "seq": int(r["seq"]), "hp": hp,
+                                 "price18": price18, "raw": raw, "basis": basis, "caddie": caddie})
             final = pd.DataFrame(recs)
 
             pick = [r for r in allr if st.session_state.get(f"dealreg_{r}", True)]
@@ -993,17 +1025,20 @@ def deal_panel(tokens, fallback):
             if not len(dv):
                 st.info("선택한 지역에는 18홀 기준 6만원 이하 특가가 없어요. 지역을 바꿔보세요.")
             else:
-                st.caption(f"총 {len(dv):,}건 · 18홀 기준 가격 낮은순 (9홀은 그린피×2로 계산)")
+                st.caption(f"총 {len(dv):,}건 · 18홀 기준 가격 낮은순 "
+                           "(실제 18홀 라운드 금액 · 순수 9·6홀 코스는 2·3라운드 실결제 금액)")
                 rows = []
                 for _, r in dv.head(80).iterrows():
                     cad = caddie_pill(str(r["caddie"]))
                     price = f"{int(r['price18']):,}원"
-                    if r["basis"] == "9홀×2":
-                        basis_html = (f"<span style='color:#c026d3;font-weight:800'>· 9홀×2</span>")
-                        price_sub = f"<div style='font-size:11px;color:#8a9a8f'>(9홀 {int(r['raw']):,}원)</div>"
-                    else:
-                        basis_html = "<span style='color:#2b6b3f;font-weight:800'>· 18홀</span>"
+                    if r["hp"] == 18:
+                        basis_html = "<span style='color:#2b6b3f;font-weight:800'>· 실제 18홀</span>"
                         price_sub = ""
+                    else:
+                        rounds = 18 // int(r["hp"])
+                        basis_html = f"<span style='color:#c026d3;font-weight:800'>· {r['basis']}</span>"
+                        price_sub = (f"<div style='font-size:11px;color:#8a9a8f'>"
+                                     f"({int(r['hp'])}홀 {int(r['raw']):,}원 × {rounds}라운드)</div>")
                     url = booking_url(r["seq"], r["date"])
                     rows.append(
                         "<div class='deal-row'>"
