@@ -9,6 +9,7 @@ scan.py — 전국 골프장 목록(catalog)을 날짜 기준으로 훑어
 
 import concurrent.futures as cf
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -17,11 +18,12 @@ import teescanner as ts
 import catalog as CAT
 
 HERE = Path(__file__).parent
+SCAN_VER = "v2"   # 18홀 기준 산정으로 바뀜 → 옛 캐시(원가 기준)와 파일명 분리
 
 
 def scan_file(date: str, min_hour=None) -> Path:
     suffix = f"_n{min_hour}" if min_hour is not None else ""
-    return HERE / f"scan_{date}{suffix}.json"
+    return HERE / f"scan_{date}{suffix}_{SCAN_VER}.json"
 
 
 def _hour(t) -> int:
@@ -29,6 +31,20 @@ def _hour(t) -> int:
     s = str(t).strip()
     s = s.split(":")[0] if ":" in s else s[:2]
     return int(s) if s.isdigit() else -1
+
+
+def _holes(name) -> int | None:
+    """티타임 코스명 → 요금이 커버하는 홀 수(18/9/6 등). '18홀'·'9홀X2'→18, '6홀X2'→12, 없으면 None."""
+    s = str(name or "").upper().replace("×", "X").replace("회", "").replace(" ", "")
+    if "18홀" in s:
+        return 18
+    m = re.search(r'(\d+)홀(?:X(\d+))?', s)
+    if not m:
+        return None
+    base = int(m.group(1))
+    mult = int(m.group(2)) if m.group(2) else 1
+    n = base * mult
+    return n if n > 0 else None
 
 
 def _one(club: dict, date: str, tokens=None, min_hour=None) -> dict | None:
@@ -39,22 +55,41 @@ def _one(club: dict, date: str, tokens=None, min_hour=None) -> dict | None:
         df = ts.tee_times_dataframe(int(seq), date, tokens=tokens)
     except Exception:
         return None
-    df = df[df["green_fee"].notna()]
-    # 당일 야간 등: 특정 시각 이후 티타임만 대상으로 최저가 계산
+    df = df[df["green_fee"].notna() & (df["green_fee"] > 0)]
+    # 당일 야간 등: 특정 시각 이후 티타임만 대상
     if min_hour is not None and len(df):
         df = df[df["time"].map(_hour) >= int(min_hour)]
     if not len(df):
         return None
-    row = df.loc[df["green_fee"].idxmin()]
+
+    # 18홀 기준 실제 최저가: 진짜 18홀 라운드 우선, 없으면 순수 9홀×2 / 6홀×3
+    best = {18: None, 9: None, 6: None}
+    meta = {18: None, 9: None, 6: None}   # (caddie, course_name, time)
+    for _, r in df.iterrows():
+        hp = _holes(r.get("course"))
+        if hp is None:
+            hp = 18
+        if hp not in (18, 9, 6):
+            continue
+        gf = int(r["green_fee"])
+        if best[hp] is None or gf < best[hp]:
+            best[hp] = gf
+            meta[hp] = (str(r.get("caddie") or ""), str(r.get("course") or ""), str(r.get("time") or ""))
+    if best[18] is not None:
+        price18, hp, rounds = best[18], 18, 1
+    elif best[9] is not None:
+        price18, hp, rounds = best[9] * 2, 9, 2
+    elif best[6] is not None:
+        price18, hp, rounds = best[6] * 3, 6, 3
+    else:
+        return None                        # 18홀로 만들 수 없는 곳(6홀X2 등)은 제외
+    cad, cname, ttime = meta[hp]
+
     score = club.get("score")
     try:
         score = None if score is None or pd.isna(score) else float(score)
     except (TypeError, ValueError):
         score = None
-    try:
-        people = None if pd.isna(row.get("people")) else int(row.get("people"))
-    except (TypeError, ValueError):
-        people = None
     return {
         "seq": int(seq),
         "course": str(club.get("course", "")),
@@ -62,11 +97,14 @@ def _one(club: dict, date: str, tokens=None, min_hour=None) -> dict | None:
         "region": CAT.top_region(club.get("area", "")),
         "address": str(club.get("address", "")),
         "score": score,
-        "min_cost": int(row["green_fee"]),
-        "caddie": str(row.get("caddie") or ""),
-        "course_name": str(row.get("course") or ""),
-        "time": str(row.get("time") or ""),
-        "people": people,
+        "min_cost": int(price18),          # 18홀 기준 실제 금액
+        "raw": int(best[hp]),              # 1라운드 실제가
+        "hp": hp,                          # 18 / 9 / 6
+        "rounds": rounds,                  # 18홀 만들려는 라운드 수(1/2/3)
+        "caddie": cad,
+        "course_name": cname,
+        "time": ttime,
+        "people": None,
     }
 
 

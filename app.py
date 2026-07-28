@@ -1172,7 +1172,8 @@ def _scan_results_body(scan_df, real_date, tokens, only_am, only_pm, only_night,
     if not len(sv):
         st.info("조건에 맞는 골프장이 없어요. 지역이나 검색어를 바꿔보세요.")
         return
-    st.caption(f"전국 {len(sv):,}곳 · 표에서 **골프장 행을 클릭**하면 하단에 티타임 상세가 나와요.")
+    st.caption(f"전국 {len(sv):,}곳 · **18홀 기준 실제 금액**(9·6홀 코스는 2·3라운드) · "
+               "행을 클릭하면 하단에 티타임 상세가 나와요.")
     has_cname = "course_name" in sv.columns
     best_price = sdf["min_cost"].min()
     rows = []
@@ -1180,6 +1181,9 @@ def _scan_results_body(scan_df, real_date, tokens, only_am, only_pm, only_night,
         cname = (_html.unescape(str(r["course_name"]))
                  if has_cname and pd.notna(r.get("course_name")) and str(r["course_name"]).strip()
                  else "-")
+        hp = int(r["hp"]) if ("hp" in sv.columns and pd.notna(r.get("hp"))) else 18
+        rounds = int(r["rounds"]) if ("rounds" in sv.columns and pd.notna(r.get("rounds"))) else 1
+        raw = int(r["raw"]) if ("raw" in sv.columns and pd.notna(r.get("raw"))) else int(r["min_cost"])
         rows.append({
             "seq": (None if pd.isna(r.get("seq")) else int(r["seq"])),
             "course": str(r["course"]),
@@ -1190,6 +1194,7 @@ def _scan_results_body(scan_df, real_date, tokens, only_am, only_pm, only_night,
             "score": (None if pd.isna(r["score"]) else float(r["score"])),
             "is_deal": bool(r["min_cost"] <= DEAL_LIMIT_PRICE),
             "is_best": bool(r["min_cost"] == best_price),
+            "hp": hp, "rounds": rounds, "raw": raw,
         })
     selected = st.session_state.get("scan_sel_course")
     clicked = _scan_table(rows=rows, selected=selected, date=real_date,
