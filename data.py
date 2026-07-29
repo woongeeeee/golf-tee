@@ -1,14 +1,3 @@
-"""
-data.py
-골프장 / 티타임 데이터 모델과 샘플 데이터.
-
-골프장 목록은 문화체육관광부 '전국 골프장 현황'(golf_courses.csv, 541곳, 9홀 포함)에서
-읽어옵니다. 이 데이터에는 좌표가 없어 지역 중심 좌표에 결정적 지터를 더해 지도용
-근사 위경도를 만듭니다(정확한 핀은 지오코딩 필요).
-
-가격/티타임/캐디는 아직 '샘플'이며, scraper 가 실제 데이터를 STANDARD_COLUMNS 형식으로
-돌려주면 화면 코드를 안 바꾸고 교체됩니다.
-"""
 
 import datetime as dt
 import hashlib
@@ -23,10 +12,7 @@ STANDARD_COLUMNS = [
     "holes", "gubun", "address", "city",
 ]
 
-
 def city_from_address(addr: str) -> str:
-    """소재지에서 시/군/구(=시 단위)를 추출. 예: '춘천시 신동면 …' → '춘천시'.
-    (도 이름이 앞에 붙어도 건너뛰고 시/군/구를 찾음)"""
     parts = str(addr).split()
     for p in parts:
         if p.endswith(("시", "군", "구")):
@@ -41,12 +27,8 @@ SOURCE_URLS = {
 }
 _SOURCES = list(SOURCE_URLS.keys())
 
-
 def booking_link(course: str, source: str) -> str:
-    """예약 버튼 링크 → 출처 플랫폼의 예약 페이지로 이동.
-    (특정 골프장 자동 선택 딥링크는 각 플랫폼 고유 ID가 필요 → 실제 스크래핑/제휴 시 업그레이드)"""
     return SOURCE_URLS[source]
-
 
 REGION_CENTERS = {
     "서울": (37.56, 126.99), "부산": (35.18, 129.07), "대구": (35.87, 128.60),
@@ -59,22 +41,17 @@ REGION_CENTERS = {
 
 CSV_PATH = Path(__file__).parent / "golf_courses.csv"
 
-
 def _approx_coord(region: str, name: str) -> tuple[float, float]:
-    """지역 중심 + 이름 해시 기반 결정적 지터로 지도용 근사 좌표 생성."""
     clat, clon = REGION_CENTERS.get(region, (36.5, 127.8))
     h = int(hashlib.md5(name.encode("utf-8")).hexdigest(), 16)
     dlat = ((h % 1000) / 1000 - 0.5) * 0.45
     dlon = (((h // 1000) % 1000) / 1000 - 0.5) * 0.45
     return round(clat + dlat, 4), round(clon + dlon, 4)
 
-
 def _load_courses() -> list[dict]:
-    """CSV에서 전국 골프장 목록을 읽어 (근사 좌표 포함) 반환."""
     try:
         cdf = pd.read_csv(CSV_PATH, encoding="utf-8")
     except (OSError, ValueError):
-        # CSV가 없으면 최소 동작용 소형 목록으로 폴백
         return [{"name": "스카이72 CC", "region": "인천", "holes": 18, "gubun": "대중제",
                  "address": "인천", "lat": 37.482, "lon": 126.551}]
     courses = []
@@ -91,13 +68,10 @@ def _load_courses() -> list[dict]:
         })
     return courses
 
-
 _COURSES = _load_courses()
 _TIMES = ["06:12", "06:40", "07:04", "07:28", "10:16", "11:00", "12:20", "13:40", "15:10", "16:00"]
 
-
 def _rows_for_date(date: dt.date) -> list[dict]:
-    """특정 날짜의 티타임을 '날짜 기반 고정 시드'로 생성(같은 날짜는 항상 같은 결과)."""
     import random
     rng = random.Random(date.toordinal())
     is_weekend = date.weekday() >= 5
@@ -108,8 +82,11 @@ def _rows_for_date(date: dt.date) -> list[dict]:
             price = base + (40000 if is_weekend else 0)
             if int(tee[:2]) <= 7:
                 price += 15000
-            if rng.random() < 0.10:  # 특가: 약 10% 확률로 7만원 이하
-                price = rng.choice([49000, 55000, 59000, 65000, 69000])
+            
+            # 특가 로직 제거 (원래 약 10% 확률로 7만원 이하)
+            # if rng.random() < 0.10:  
+            #     price = rng.choice([49000, 55000, 59000, 65000, 69000])
+                
             caddie = rng.choice(["캐디", "노캐디", "캐디선택가능"])
             caddie_fee = 0 if caddie == "노캐디" else rng.choice([120000, 140000, 150000])
             source = rng.choice(_SOURCES)
@@ -123,18 +100,15 @@ def _rows_for_date(date: dt.date) -> list[dict]:
             })
     return rows
 
-
 def make_sample_for_dates(dates) -> pd.DataFrame:
     rows = []
     for d in dates:
         rows.extend(_rows_for_date(d))
     return pd.DataFrame(rows, columns=STANDARD_COLUMNS)
 
-
 def make_sample_dataframe(days: int = 14) -> pd.DataFrame:
     today = dt.date.today()
     return make_sample_for_dates([today + dt.timedelta(days=i) for i in range(days)])
-
 
 def add_total_cost(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -145,7 +119,6 @@ def add_total_cost(df: pd.DataFrame) -> pd.DataFrame:
     per_cart = (df["cart_fee"] / df["players"]).round(0)
     df["est_total_per_person"] = (df["green_fee"] + per_caddie + per_cart).astype(int)
     return df
-
 
 if __name__ == "__main__":
     print("총 골프장 수:", len(_COURSES))
